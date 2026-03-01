@@ -1,0 +1,602 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#0b1220" />
+  <title>SINNERS Suite</title>
+
+  <link rel="manifest" href="manifest.json" />
+  <link rel="icon" type="image/png" href="sinnerslogo.png" />
+  <link rel="apple-touch-icon" href="sinnerslogo.png" />
+
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <!-- Splash -->
+  <section id="view-splash" class="view view-splash" aria-hidden="true">
+    <div class="splash-wrap">
+      <!-- Logo PNG -->
+      <img
+        class="sinners-logo splash-logo"
+        src="sinnerslogo.png"
+        alt="SINNERS Logo"
+        draggable="false"
+      />
+
+      <h1 class="splash-title">SINNERS</h1>
+      <p class="splash-tagline">Security • Investigations • Network • Nmap • Exploitation • Reconnaissance • Suite</p>
+
+      <div class="splash-scanline" aria-hidden="true"></div>
+      <div class="splash-loader" aria-hidden="true">
+        <span></span><span></span><span></span>
+      </div>
+    </div>
+  </section>
+
+  <!-- Setup Wizard -->
+  <section id="view-setup" class="view" aria-hidden="true">
+    <div class="panel">
+      <div class="panel-head">
+        <h2>Workspace Setup</h2>
+        <p class="muted">
+          Choose a local workspace folder (recommended: <b>Desktop/SINNERS</b>).
+          This lets SINNERS store cases/reports as real files on your drive (Chrome/Edge/Brave).
+        </p>
+      </div>
+
+      <div class="grid-2">
+        <div class="card">
+          <h3>Workspace Mode</h3>
+          <p class="muted" id="setup-supportText">Checking browser support…</p>
+          <div class="row gap">
+            <button class="btn primary" id="btnSelectWorkspace">Select Workspace</button>
+            <button class="btn ghost" id="btnUseFallback">Use Fallback (IndexedDB)</button>
+          </div>
+          <p class="tiny muted">
+            If your browser doesn’t support local folder access, fallback mode stores data in the browser and supports export/import.
+          </p>
+        </div>
+
+        <div class="card">
+          <h3>What we’ll create</h3>
+          <ul class="list">
+            <li><code>cases/</code> — case folders + metadata</li>
+            <li><code>reports/</code> — reports by case</li>
+            <li><code>attachments/</code> — evidence files you save</li>
+            <li><code>templates/</code> — report templates</li>
+            <li><code>exports/</code> — exports (JSON/PDF)</li>
+            <li><code>logs/</code> — agenda + audit log</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="panel-foot">
+        <div class="status-pill" id="setupStatus">Not configured</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Login -->
+  <section id="view-login" class="view" aria-hidden="true">
+    <div class="panel panel-narrow">
+      <div class="panel-head">
+        <!-- Login Logo -->
+        <div style="display:flex; align-items:center; gap:12px; margin-bottom:10px;">
+          <img
+            class="sinners-logo login-logo"
+            src="sinnerslogo.png"
+            alt="SINNERS Logo"
+            draggable="false"
+          />
+          <div>
+            <h2 style="margin:0;">Login</h2>
+            <p class="muted" style="margin:6px 0 0 0;">Authorized access only. Local-first. No cloud sync.</p>
+          </div>
+        </div>
+      </div>
+
+      <form id="loginForm" class="form" style="padding: 0 22px 18px 22px;">
+        <label class="label">
+          <span>Username</span>
+          <input id="loginUser" autocomplete="username" spellcheck="false" />
+        </label>
+
+        <label class="label">
+          <span>Password</span>
+          <div class="password-wrap">
+            <input id="loginPass" type="password" autocomplete="current-password" />
+            <button class="iconbtn" type="button" id="btnTogglePass" aria-label="Toggle password visibility">👁️</button>
+          </div>
+          <span class="tiny muted" id="capsHint" hidden>Caps Lock might be ON.</span>
+        </label>
+
+        <div class="row gap">
+          <button class="btn primary" type="submit">Enter SINNERS</button>
+          <button class="btn ghost" type="button" id="btnBackToSetup">Back</button>
+        </div>
+
+        <div class="error" id="loginError" hidden></div>
+      </form>
+
+      <div class="panel-foot">
+        <span class="tiny muted">Session stored in <code>sessionStorage</code> only.</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- App Shell -->
+  <section id="view-app" class="view view-app" aria-hidden="true">
+    <aside class="sidebar">
+      <div class="brand">
+        <!-- Sidebar Logo -->
+        <img
+          class="sinners-logo brand-logo"
+          src="sinnerslogo.png"
+          alt="SINNERS Logo"
+          draggable="false"
+        />
+        <div>
+          <div class="brand-title">SINNERS</div>
+          <div class="brand-sub muted" id="workspaceBadge">Workspace: …</div>
+        </div>
+      </div>
+
+      <nav class="nav" aria-label="Primary">
+        <button class="nav-item active" data-route="dashboard">🏠 <span>Dashboard</span></button>
+        <button class="nav-item" data-route="cases">🗂️ <span>Cases</span></button>
+        <button class="nav-item" data-route="reports">📝 <span>Reports</span></button>
+        <button class="nav-item" data-route="osint">🕵️ <span>OSINT Launcher</span></button>
+        <button class="nav-item" data-route="utils">🧰 <span>Utilities</span></button>
+        <button class="nav-item" data-route="settings">⚙️ <span>Settings</span></button>
+      </nav>
+
+      <div class="sidebar-foot">
+        <button class="btn ghost full" id="btnLogout">Log out</button>
+        <p class="tiny muted">Tip: Ctrl/⌘+K = Command Palette</p>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div class="top-left">
+          <div class="pill" id="activeCasePill" title="Active case">No active case</div>
+          <button class="btn ghost" id="btnQuickNewCase">+ New Case</button>
+          <button class="btn ghost" id="btnQuickNewReport">+ New Report</button>
+        </div>
+
+        <div class="top-right">
+          <div class="search">
+            <input id="globalSearch" placeholder="Search cases, reports, agenda… (Ctrl/⌘+K)" />
+            <button class="iconbtn" id="btnCmd" aria-label="Open command palette">⌘K</button>
+          </div>
+        </div>
+      </header>
+
+      <section class="content">
+        <!-- Dashboard -->
+        <div id="page-dashboard" class="page">
+          <div class="page-head">
+            <h2>Dashboard</h2>
+            <div class="row gap">
+              <button class="btn primary" id="btnNewAgenda">+ Post Agenda</button>
+              <button class="btn ghost" id="btnRefreshDash">Refresh</button>
+            </div>
+          </div>
+
+          <div class="grid-2">
+            <div class="card">
+              <div class="card-head">
+                <h3>Agenda / Bulletin</h3>
+                <span class="tiny muted">Admin-only publishing (MVP: you are Admin).</span>
+              </div>
+              <div id="agendaList" class="stack"></div>
+            </div>
+
+            <div class="card">
+              <div class="card-head">
+                <h3>Quick Actions</h3>
+              </div>
+              <div class="quick grid-2">
+                <button class="tile" id="tileNewCase">Create Case</button>
+                <button class="tile" id="tileNewReport">Write Report</button>
+                <button class="tile" id="tileOsint">Run OSINT</button>
+                <button class="tile" id="tileExport">Export Bundle</button>
+              </div>
+              <div class="divider"></div>
+              <h4 class="muted">Recent Activity</h4>
+              <div id="activityList" class="stack"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Cases -->
+        <div id="page-cases" class="page" hidden>
+          <div class="page-head">
+            <h2>Cases</h2>
+            <div class="row gap">
+              <button class="btn primary" id="btnCreateCase">+ Create Case</button>
+              <button class="btn ghost" id="btnReloadCases">Reload</button>
+            </div>
+          </div>
+
+          <div class="grid-2">
+            <div class="card">
+              <div class="row gap">
+                <input id="caseFilter" placeholder="Filter by title, tag, status…" />
+                <select id="caseStatusFilter">
+                  <option value="">All</option>
+                  <option>Open</option>
+                  <option>Active</option>
+                  <option>On Hold</option>
+                  <option>Closed</option>
+                </select>
+              </div>
+              <div class="divider"></div>
+              <div id="caseList" class="listbox"></div>
+            </div>
+
+            <div class="card">
+              <div class="card-head">
+                <h3>Case Detail</h3>
+                <div class="row gap">
+                  <button class="btn ghost" id="btnCaseSetActive">Set Active</button>
+                  <button class="btn ghost" id="btnCaseSave">Save</button>
+                </div>
+              </div>
+
+              <div id="caseDetailEmpty" class="muted">Select a case to view/edit.</div>
+
+              <div id="caseDetail" hidden>
+                <div class="grid-2">
+                  <label class="label">
+                    <span>Title</span>
+                    <input id="caseTitle" />
+                  </label>
+                  <label class="label">
+                    <span>Status</span>
+                    <select id="caseStatus">
+                      <option>Open</option>
+                      <option>Active</option>
+                      <option>On Hold</option>
+                      <option>Closed</option>
+                    </select>
+                  </label>
+                </div>
+
+                <div class="grid-2">
+                  <label class="label">
+                    <span>Assigned Investigator</span>
+                    <input id="caseAssigned" />
+                  </label>
+                  <label class="label">
+                    <span>Tags (comma-separated)</span>
+                    <input id="caseTags" />
+                  </label>
+                </div>
+
+                <label class="label">
+                  <span>Subjects (one per line)</span>
+                  <textarea id="caseSubjects" rows="3"></textarea>
+                </label>
+
+                <label class="label">
+                  <span>Timeline Notes</span>
+                  <textarea id="caseTimeline" rows="4"></textarea>
+                </label>
+
+                <div class="divider"></div>
+                <div class="row gap">
+                  <button class="btn ghost" id="btnCaseNewReport">Create Report for this Case</button>
+                  <button class="btn ghost" id="btnCaseExport">Export Case JSON</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Reports -->
+        <div id="page-reports" class="page" hidden>
+          <div class="page-head">
+            <h2>Report Builder</h2>
+            <div class="row gap">
+              <button class="btn primary" id="btnCreateReport">+ New Report</button>
+              <button class="btn ghost" id="btnLoadReport">Open Report</button>
+              <button class="btn ghost" id="btnSaveReport">Save</button>
+              <button class="btn ghost" id="btnExportReportJson">Export JSON</button>
+              <button class="btn ghost" id="btnPrintPdf">Print to PDF</button>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="row gap">
+              <div class="pill" id="reportCasePill">Case: none</div>
+              <div class="pill" id="reportIdPill">Report: none</div>
+              <label class="switch">
+                <input type="checkbox" id="toggleRedaction" />
+                <span>Redaction Mode</span>
+              </label>
+            </div>
+
+            <div class="divider"></div>
+
+            <div class="grid-2">
+              <label class="label">
+                <span>Report Type</span>
+                <select id="repType">
+                  <option>OSINT Lead</option>
+                  <option>Incident Summary</option>
+                  <option>Cyber Tip Triage</option>
+                  <option>Surveillance Summary</option>
+                  <option>Digital Evidence Summary</option>
+                </select>
+              </label>
+
+              <label class="label">
+                <span>Reason / Category</span>
+                <select id="repReason">
+                  <option>Threat Assessment</option>
+                  <option>Fraud / Financial</option>
+                  <option>Harassment / Stalking</option>
+                  <option>Policy / Internal</option>
+                  <option>Unknown / Other</option>
+                </select>
+              </label>
+            </div>
+
+            <div class="grid-2">
+              <label class="label">
+                <span>Confidence</span>
+                <select id="repConfidence">
+                  <option>Low</option>
+                  <option selected>Medium</option>
+                  <option>High</option>
+                </select>
+              </label>
+
+              <label class="label">
+                <span>Scope</span>
+                <input id="repScope" placeholder="What’s in scope / out of scope?" />
+              </label>
+            </div>
+
+            <label class="label">
+              <span>Executive Summary</span>
+              <textarea id="repSummary" rows="4"></textarea>
+            </label>
+
+            <label class="label">
+              <span>Methods / Tools Used</span>
+              <textarea id="repMethods" rows="3" placeholder="Dorks, registries, platform checks, tooling…"></textarea>
+            </label>
+
+            <label class="label">
+              <span>Findings</span>
+              <textarea id="repFindings" rows="5"></textarea>
+            </label>
+
+            <div class="divider"></div>
+
+            <div class="row gap">
+              <h3 class="grow">Evidence Items</h3>
+              <button class="btn ghost" id="btnAddEvidence">+ Add Evidence</button>
+            </div>
+            <div id="evidenceList" class="stack"></div>
+
+            <div class="divider"></div>
+
+            <label class="label">
+              <span>Recommendations / Next Steps</span>
+              <textarea id="repNext" rows="3"></textarea>
+            </label>
+          </div>
+        </div>
+
+        <!-- OSINT -->
+        <div id="page-osint" class="page" hidden>
+          <div class="page-head">
+            <h2>OSINT / Recon Launcher</h2>
+            <div class="row gap">
+              <button class="btn ghost" id="btnRunOsint">Open All Selected</button>
+              <button class="btn ghost" id="btnSaveOsintHistory">Save to Active Case</button>
+            </div>
+          </div>
+
+          <div class="grid-2">
+            <div class="card">
+              <h3>Inputs</h3>
+              <div class="grid-2">
+                <label class="label"><span>Username</span><input id="inUsername" /></label>
+                <label class="label"><span>Email</span><input id="inEmail" /></label>
+              </div>
+              <div class="grid-2">
+                <label class="label"><span>Phone</span><input id="inPhone" /></label>
+                <label class="label"><span>Name</span><input id="inName" /></label>
+              </div>
+              <div class="grid-2">
+                <label class="label"><span>Domain</span><input id="inDomain" /></label>
+                <label class="label"><span>IP</span><input id="inIP" /></label>
+              </div>
+
+              <div class="divider"></div>
+              <label class="label">
+                <span>Category</span>
+                <select id="osintCategory"></select>
+              </label>
+
+              <div class="row gap">
+                <button class="btn primary" id="btnGenerateOsint">Generate Links</button>
+                <button class="btn ghost" id="btnSelectAllOsint">Select All</button>
+                <button class="btn ghost" id="btnClearOsint">Clear</button>
+              </div>
+              <p class="tiny muted">
+                Links are templates. Variables are URL-encoded. Nothing is executed on your machine.
+              </p>
+            </div>
+
+            <div class="card">
+              <div class="row gap">
+                <h3 class="grow">Generated Links</h3>
+                <span class="tiny muted" id="osintCount">0 links</span>
+              </div>
+              <div id="osintLinks" class="listbox"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Utilities -->
+        <div id="page-utils" class="page" hidden>
+          <div class="page-head">
+            <h2>Utilities</h2>
+          </div>
+
+          <div class="grid-2">
+            <div class="card">
+              <h3>Timestamp Converter</h3>
+              <label class="label">
+                <span>Input (ISO / epoch seconds / epoch ms)</span>
+                <input id="tsInput" placeholder="e.g., 1700000000 or 1700000000000 or 2026-02-26T12:00:00Z" />
+              </label>
+              <div class="row gap">
+                <button class="btn primary" id="btnTsConvert">Convert</button>
+                <button class="btn ghost" id="btnTsNow">Now</button>
+              </div>
+              <pre class="pre" id="tsOutput"></pre>
+            </div>
+
+            <div class="card">
+              <h3>Hashing (WebCrypto)</h3>
+              <label class="label">
+                <span>Text</span>
+                <textarea id="hashInput" rows="4"></textarea>
+              </label>
+              <div class="row gap">
+                <button class="btn primary" id="btnHash">Hash</button>
+                <button class="btn ghost" id="btnHashClear">Clear</button>
+              </div>
+              <pre class="pre" id="hashOutput"></pre>
+              <p class="tiny muted">MD5 is included as a lightweight JS implementation (not WebCrypto).</p>
+            </div>
+
+            <div class="card">
+              <h3>URL Sanitizer</h3>
+              <label class="label">
+                <span>URL</span>
+                <input id="urlInput" placeholder="Paste a URL with tracking params…" />
+              </label>
+              <div class="row gap">
+                <button class="btn primary" id="btnUrlClean">Clean</button>
+                <button class="btn ghost" id="btnUrlCopy">Copy</button>
+              </div>
+              <pre class="pre" id="urlOutput"></pre>
+            </div>
+
+            <div class="card">
+              <h3>CIDR Calculator</h3>
+              <label class="label">
+                <span>IPv4 + prefix (e.g., 192.168.1.10/24)</span>
+                <input id="cidrInput" />
+              </label>
+              <div class="row gap">
+                <button class="btn primary" id="btnCidr">Calculate</button>
+                <button class="btn ghost" id="btnCidrClear">Clear</button>
+              </div>
+              <pre class="pre" id="cidrOutput"></pre>
+            </div>
+          </div>
+        </div>
+
+        <!-- Settings -->
+        <div id="page-settings" class="page" hidden>
+          <div class="page-head">
+            <h2>Settings</h2>
+          </div>
+
+          <div class="grid-2">
+            <div class="card">
+              <h3>Workspace</h3>
+              <p class="muted" id="settingsWorkspaceText">…</p>
+              <div class="row gap">
+                <button class="btn primary" id="btnRePickWorkspace">Re-pick Workspace</button>
+                <button class="btn ghost" id="btnForgetWorkspace">Forget Workspace</button>
+              </div>
+            </div>
+
+            <div class="card">
+              <h3>Export / Import</h3>
+              <div class="row gap">
+                <button class="btn primary" id="btnExportAll">Export Bundle (JSON)</button>
+                <label class="btn ghost">
+                  Import Bundle
+                  <input type="file" id="fileImport" accept="application/json" hidden />
+                </label>
+              </div>
+              <p class="tiny muted">Exports never include passwords. Data is local-only.</p>
+            </div>
+
+            <div class="card">
+              <h3>About</h3>
+              <p class="muted">
+                SINNERS is a local-first investigations suite. It stores data on your machine (workspace folder) when supported,
+                otherwise in browser storage (IndexedDB).
+              </p>
+              <p class="tiny muted">MVP credentials: Nfranco / Admin!</p>
+            </div>
+          </div>
+        </div>
+
+      </section>
+    </main>
+  </section>
+
+  <!-- Modals -->
+  <div id="modalHost" class="modal-host" hidden></div>
+
+  <!-- Command Palette -->
+  <div id="cmdk" class="cmdk" hidden>
+    <div class="cmdk-panel">
+      <div class="cmdk-head">
+        <input id="cmdkInput" placeholder="Type a command… (Esc to close)" />
+      </div>
+      <div id="cmdkList" class="cmdk-list"></div>
+    </div>
+  </div>
+
+  <!-- Toasts -->
+  <div id="toasts" class="toasts" aria-live="polite" aria-atomic="true"></div>
+
+  <script src="script.js"></script>
+
+  <!-- Tiny logo styling (safe to keep here; no CSS file change required) -->
+  <style>
+    .sinners-logo{
+      user-select:none;
+      -webkit-user-drag:none;
+      image-rendering:auto;
+      filter: drop-shadow(0 18px 50px rgba(100,255,218,.12));
+    }
+    .splash-logo{
+      width: 140px;
+      height: auto;
+      margin: 0 auto 10px auto;
+      display:block;
+    }
+    .login-logo{
+      width: 48px;
+      height: auto;
+      border-radius: 12px;
+      border: 1px solid rgba(255,255,255,.14);
+      background: rgba(255,255,255,.04);
+      padding: 6px;
+    }
+    .brand-logo{
+      width: 38px;
+      height: auto;
+      border-radius: 12px;
+      border: 1px solid rgba(255,255,255,.12);
+      background: rgba(255,255,255,.04);
+      padding: 6px;
+    }
+  </style>
+</body>
+</html>

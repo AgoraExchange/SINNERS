@@ -641,7 +641,9 @@ const Auth = (() => {
   // NOTE: This is still hardcoded (MVP). Later we can move this to a proper user store.
   const USERS = {
     "Nfranco": "Admin!",
-    "Jgarcia": "Admin!:"   // <-- your new user
+    "Jgarcia": "Admin!:",   // <-- new user
+    "Ctorres": "Admin!@:"   // <-- new user
+
   };
 
   function isLoggedIn() {

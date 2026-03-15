@@ -501,3 +501,182 @@ input:focus, select:focus, textarea:focus{
 .modal-host[hidden]{
   display: none !important;
 }
+
+/* ============================
+   NOTES + EVIDENCE (ADD-ON)
+   Paste at END of style.css
+   ============================ */
+
+/* Make long lists usable */
+#noteList,
+#bagList,
+#osintLinks,
+#caseList {
+  max-height: 520px;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+/* Evidence bag items: nice stacked “mini cards” */
+#bagItems .bag-item {
+  border: 1px solid rgba(255,255,255,0.10);
+  background: rgba(255,255,255,0.03);
+  border-radius: 14px;
+  padding: 12px;
+}
+
+#bagItems .bag-item .bag-item-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+#bagItems .bag-item .bag-item-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+#bagItems .bag-item .thumb {
+  width: 64px;
+  height: 64px;
+  border-radius: 12px;
+  border: 1px solid rgba(255,255,255,0.12);
+  background: rgba(0,0,0,0.25);
+  overflow: hidden;
+  flex: 0 0 auto;
+}
+
+#bagItems .bag-item .thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+#bagItems .bag-item .bag-item-note textarea {
+  width: 100%;
+  min-height: 70px;
+  resize: vertical;
+}
+
+/* Slightly denser list rows (helps Notes/Bags feel “real”) */
+.listbox .rowitem,
+#noteList .rowitem,
+#bagList .rowitem {
+  padding: 10px 12px;
+  border-radius: 12px;
+}
+
+/* Mobile: make the two-column layout stack cleanly */
+@media (max-width: 980px) {
+  #page-notes .grid-2,
+  #page-evidence .grid-2 {
+    grid-template-columns: 1fr !important;
+  }
+
+  #noteList,
+  #bagList {
+    max-height: 320px;
+  }
+}
+
+/* ============================
+   CALENDAR (ADD-ON)
+   ============================ */
+.cal-week{
+  display:grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 8px;
+}
+.cal-head{
+  margin-bottom: 10px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.cal-head > div{
+  text-align:center;
+  padding: 8px 6px;
+  border-radius: 12px;
+  border: 1px solid rgba(255,255,255,.08);
+  background: rgba(255,255,255,.03);
+}
+
+.cal-grid{
+  display:grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 8px;
+}
+.cal-day{
+  border:1px solid rgba(255,255,255,.10);
+  background: rgba(255,255,255,.04);
+  border-radius: 14px;
+  padding: 10px 10px;
+  min-height: 74px;
+  cursor:pointer;
+  position:relative;
+  transition: background .2s ease, border-color .2s ease, transform .08s ease;
+}
+.cal-day:hover{
+  background: rgba(255,255,255,.06);
+  border-color: rgba(255,255,255,.18);
+}
+.cal-day:active{ transform: translateY(1px); }
+
+.cal-day .n{
+  font-weight: 800;
+  font-family: var(--mono);
+  letter-spacing:.04em;
+}
+.cal-day .dot{
+  position:absolute;
+  bottom:10px;
+  left:10px;
+  display:flex;
+  gap:6px;
+  flex-wrap:wrap;
+}
+.cal-day .dot span{
+  width:8px;height:8px;border-radius:999px;
+  border:1px solid rgba(255,255,255,.18);
+  background: rgba(100,255,218,.55);
+  box-shadow: 0 0 0 3px rgba(100,255,218,.08);
+}
+.cal-day.muted{
+  opacity:.45;
+}
+.cal-day.today{
+  border-color: rgba(122,162,255,.35);
+  box-shadow: 0 0 0 3px rgba(122,162,255,.10);
+}
+.cal-day.selected{
+  border-color: rgba(100,255,218,.38);
+  background: rgba(100,255,218,.09);
+}
+
+.cal-item{
+  border: 1px solid rgba(255,255,255,.10);
+  background: rgba(255,255,255,.04);
+  border-radius: 14px;
+  padding: 12px;
+}
+.cal-item .top{
+  display:flex;
+  justify-content:space-between;
+  gap:10px;
+  align-items:center;
+}
+.cal-item .title{
+  font-weight:800;
+}
+.cal-item .meta{
+  color: var(--muted);
+  font-size: 12px;
+  margin-top: 6px;
+  display:flex;
+  gap:10px;
+  flex-wrap:wrap;
+}

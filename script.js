@@ -642,8 +642,8 @@ const Auth = (() => {
   const USERS = {
     "Nfranco": "Admin!",
     "Jgarcia": "Admin!:",   // <-- new user
-    "Ctorres": "Admin!@:"   // <-- new user
-
+    "Ctorres": "Admin!@:",   // <-- new user
+    "Dmazzulla": "ADMIN!!:"   // <-- new user
   };
 
   function isLoggedIn() {
@@ -2419,5 +2419,2275 @@ function showView(name) {
   wire();
   registerSW();
   boot();
+
+  /* =========================================================
+   WORKSPACE PATCH — add missing methods used by add-ons
+   Paste ABOVE the Notes/Evidence add-on block
+   ========================================================= */
+(() => {
+  if (typeof Workspace === "undefined") return;
+
+  // Add listEntries if missing
+  if (typeof Workspace.listEntries !== "function") {
+    Workspace.listEntries = async (dirHandle) => {
+      const out = { files: [], dirs: [] };
+      for await (const [name, handle] of dirHandle.entries()) {
+        if (handle.kind === "file") out.files.push(name);
+        else if (handle.kind === "directory") out.dirs.push(name);
+      }
+      out.files.sort();
+      out.dirs.sort();
+      return out;
+    };
+  }
+
+  // Add writeFile if missing
+  if (typeof Workspace.writeFile !== "function") {
+    Workspace.writeFile = async (dirHandle, filename, blobOrText, mime = "") => {
+      const fileHandle = await dirHandle.getFileHandle(filename, { create: true });
+      const writable = await fileHandle.createWritable();
+      if (blobOrText instanceof Blob) {
+        await writable.write(blobOrText);
+      } else {
+        await writable.write(new Blob([String(blobOrText ?? "")], { type: mime || "text/plain" }));
+      }
+      await writable.close();
+      return filename;
+    };
+  }
+
+  // Add readFile if missing
+  if (typeof Workspace.readFile !== "function") {
+    Workspace.readFile = async (dirHandle, filename) => {
+      const fileHandle = await dirHandle.getFileHandle(filename);
+      return await fileHandle.getFile();
+    };
+  }
+})();
+
+    // =========================================================
+  // NOTES + EVIDENCE ADD-ON (paste above the final "})();")
+  // Works with:
+  // - Workspace Mode: writes to /notes and /evidence folders
+  // - Fallback Mode: uses existing IndexedDB stores (no DB version bump)
+  // =========================================================
+  (() => {
+    // ---------- Guard: pages must exist ----------
+    const pageNotes = $("#page-notes");
+    const pageEvidence = $("#page-evidence");
+    if (!pageNotes || !pageEvidence) return;
+
+    // Extend Pages map so showPage() can toggle them
+    try {
+      Pages.notes = pageNotes;
+      Pages.evidence = pageEvidence;
+    } catch (_) {}
+
+    // ---------- Helpers ----------
+    const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+    const safeText = (s, max = 200000) => String(s ?? "").replace(/\r/g, "").slice(0, max);
+    const csvTags = (s) => String(s || "").split(",").map(x => x.trim()).filter(Boolean).slice(0, 50);
+
+    function sanitizeFolderName(name, maxLen = 64) {
+      const raw = String(name || "").trim();
+      if (!raw) return "";
+      const safe = raw
+        .replace(/[\\/\x00-\x1F\x7F]+/g, "_")
+        .replace(/\s+/g, "_")
+        .replace(/[^a-zA-Z0-9._\-]/g, "_")
+        .replace(/_+/g, "_")
+        .replace(/^_+|_+$/g, "");
+      return safe.slice(0, maxLen) || "bag";
+    }
+
+    function sanitizeFilename(name, maxLen = 120) {
+      const raw = String(name || "file").trim() || "file";
+      const cleaned = raw
+        .replace(/[\\/\x00-\x1F\x7F]+/g, "_")
+        .replace(/\s+/g, " ")
+        .trim()
+        .replace(/[^a-zA-Z0-9 ._\-()\[\]]/g, "_");
+      return cleaned.slice(0, maxLen) || "file";
+    }
+
+    async function ensureDir(rootHandle, name) {
+      // Workspace.dir() already creates directories, but notes/evidence weren't in the original ensureStructure list.
+      return await Workspace.dir(rootHandle, name);
+    }
+
+    /* =========================================================
+   NOTES: OPEN EXISTING (imports a JSON note file)
+   Replaces btnOpenNote behavior with file picker import
+   ========================================================= */
+(() => {
+  const btn = document.getElementById("btnOpenNote");
+  if (!btn) return;
+
+  // Replace listeners by cloning
+  const clone = btn.cloneNode(true);
+  btn.parentNode.replaceChild(clone, btn);
+
+  // Hidden file input
+  let inp = document.getElementById("noteImportFile");
+  if (!inp) {
+    inp = document.createElement("input");
+    inp.type = "file";
+    inp.id = "noteImportFile";
+    inp.accept = "application/json";
+    inp.hidden = true;
+    document.body.appendChild(inp);
+  }
+
+  function toast(title, message) {
+    try { Toasts.push({ title, message }); }
+    catch { alert(`${title}\n\n${message}`); }
+  }
+
+  async function readJSON(file) {
+    return JSON.parse(await file.text());
+  }
+
+  // Minimal “save note” that matches YOUR add-on storage (cases store in IDB)
+  async function saveNote(note) {
+    if (typeof Store !== "undefined" && Store?.state?.mode === "workspace") {
+      const notesDir = await Workspace.dir(Store.state.rootHandle, "notes");
+      await Workspace.writeJSON(notesDir, `${note.noteId}.json`, note);
+      return;
+    }
+    // fallback IDB (your add-on uses cases store for notes)
+    await DB.set("cases", `note:${note.noteId}`, note);
+  }
+
+  clone.textContent = "Open Existing";
+
+  clone.addEventListener("click", () => inp.click());
+
+  inp.addEventListener("change", async () => {
+    try {
+      const f = inp.files?.[0];
+      inp.value = "";
+      if (!f) return;
+
+      const raw = await readJSON(f);
+      const payload = raw?.payload ? raw.payload : raw; // supports wrapped exports or raw notes
+      if (!payload || typeof payload !== "object") throw new Error("Invalid note JSON.");
+
+      payload.noteId = payload.noteId || `note_${Date.now()}`;
+      payload.createdAt = payload.createdAt || new Date().toISOString();
+      payload.updatedAt = payload.updatedAt || new Date().toISOString();
+
+      await saveNote(payload);
+
+      toast("Notes", "Imported. Refreshing list…");
+
+      // If your add-on overwrote nav(), switching to notes will force render
+      if (typeof nav === "function") nav("notes");
+    } catch (e) {
+      toast("Import Error", String(e?.message || e));
+    }
+  });
+})();
+
+    // ==============
+    // NOTES STORAGE
+    // ==============
+    // Fallback uses existing object store "cases" to avoid DB version bump:
+    // keys: "note:<id>" and "notes:index"
+    const NOTE_STORE = "cases";
+    const NOTE_INDEX_KEY = "notes:index";
+
+    async function notes_index_get() {
+      return (await DB.get(NOTE_STORE, NOTE_INDEX_KEY)) || [];
+    }
+    async function notes_index_set(list) {
+      await DB.set(NOTE_STORE, NOTE_INDEX_KEY, list);
+    }
+
+    async function notes_list() {
+      if (Store.state.mode === "workspace") {
+        const notesDir = await ensureDir(Store.state.rootHandle, "notes");
+        const files = await Workspace.listFiles(notesDir);
+        const jsons = files.filter(f => f.endsWith(".json") && f !== "_index.json");
+
+        // If index exists, use it; else build a slim list (fast enough for normal sizes)
+        try {
+          const idx = await Workspace.readJSON(notesDir, "_index.json");
+          if (Array.isArray(idx)) return idx;
+        } catch {}
+
+        const out = [];
+        for (const fn of jsons.slice(0, 2000)) {
+          try {
+            const n = await Workspace.readJSON(notesDir, fn);
+            out.push({
+              noteId: n.noteId,
+              title: n.title || "Untitled",
+              category: n.category || "Other",
+              tags: Array.isArray(n.tags) ? n.tags : [],
+              caseId: n.caseId || "",
+              caseNumber: n.caseNumber || "",
+              createdAt: n.createdAt || "",
+              updatedAt: n.updatedAt || "",
+              createdBy: n.createdBy || ""
+            });
+          } catch {}
+        }
+        out.sort((a,b)=>String(b.updatedAt||"").localeCompare(String(a.updatedAt||"")));
+        // best effort index write
+        try { await Workspace.writeJSON(notesDir, "_index.json", out); } catch {}
+        return out;
+      }
+
+      // Fallback
+      const idx = await notes_index_get();
+      if (Array.isArray(idx) && idx.length) return idx;
+
+      // No index yet: scan keys in NOTE_STORE
+      const keys = await DB.keys(NOTE_STORE);
+      const out = [];
+      for (const k of keys) {
+        if (String(k).startsWith("note:")) {
+          const n = await DB.get(NOTE_STORE, k);
+          if (n) {
+            out.push({
+              noteId: n.noteId,
+              title: n.title || "Untitled",
+              category: n.category || "Other",
+              tags: Array.isArray(n.tags) ? n.tags : [],
+              caseId: n.caseId || "",
+              caseNumber: n.caseNumber || "",
+              createdAt: n.createdAt || "",
+              updatedAt: n.updatedAt || "",
+              createdBy: n.createdBy || ""
+            });
+          }
+        }
+      }
+      out.sort((a,b)=>String(b.updatedAt||"").localeCompare(String(a.updatedAt||"")));
+      await notes_index_set(out);
+      return out;
+    }
+
+    async function notes_get(noteId) {
+      if (Store.state.mode === "workspace") {
+        const notesDir = await ensureDir(Store.state.rootHandle, "notes");
+        return await Workspace.readJSON(notesDir, `${noteId}.json`);
+      }
+      return await DB.get(NOTE_STORE, `note:${noteId}`);
+    }
+
+    async function notes_upsert(note) {
+      const n = { ...note, updatedAt: nowISO() };
+
+      if (Store.state.mode === "workspace") {
+        const notesDir = await ensureDir(Store.state.rootHandle, "notes");
+        await Workspace.writeJSON(notesDir, `${n.noteId}.json`, n);
+
+        let idx = [];
+        try { idx = await Workspace.readJSON(notesDir, "_index.json"); } catch {}
+        if (!Array.isArray(idx)) idx = [];
+        const slim = {
+          noteId: n.noteId,
+          title: n.title || "Untitled",
+          category: n.category || "Other",
+          tags: Array.isArray(n.tags) ? n.tags : [],
+          caseId: n.caseId || "",
+          caseNumber: n.caseNumber || "",
+          createdAt: n.createdAt || nowISO(),
+          updatedAt: n.updatedAt || nowISO(),
+          createdBy: n.createdBy || ""
+        };
+        const i = idx.findIndex(x => x.noteId === n.noteId);
+        if (i >= 0) idx[i] = slim; else idx.unshift(slim);
+        idx.sort((a,b)=>String(b.updatedAt||"").localeCompare(String(a.updatedAt||"")));
+        await Workspace.writeJSON(notesDir, "_index.json", idx.slice(0, 4000));
+      } else {
+        await DB.set(NOTE_STORE, `note:${n.noteId}`, n);
+        let idx = await notes_index_get();
+        if (!Array.isArray(idx)) idx = [];
+        const slim = {
+          noteId: n.noteId,
+          title: n.title || "Untitled",
+          category: n.category || "Other",
+          tags: Array.isArray(n.tags) ? n.tags : [],
+          caseId: n.caseId || "",
+          caseNumber: n.caseNumber || "",
+          createdAt: n.createdAt || nowISO(),
+          updatedAt: n.updatedAt || nowISO(),
+          createdBy: n.createdBy || ""
+        };
+        const i = idx.findIndex(x => x.noteId === n.noteId);
+        if (i >= 0) idx[i] = slim; else idx.unshift(slim);
+        idx.sort((a,b)=>String(b.updatedAt||"").localeCompare(String(a.updatedAt||"")));
+        await notes_index_set(idx.slice(0, 4000));
+      }
+
+      try { await Store.auditAppend({ type: "note.upsert", msg: `Saved note ${n.noteId}` }); } catch {}
+      return n;
+    }
+
+    async function notes_delete(noteId) {
+      if (Store.state.mode === "workspace") {
+        const notesDir = await ensureDir(Store.state.rootHandle, "notes");
+        try { await notesDir.removeEntry(`${noteId}.json`); } catch {}
+        let idx = [];
+        try { idx = await Workspace.readJSON(notesDir, "_index.json"); } catch {}
+        if (!Array.isArray(idx)) idx = [];
+        idx = idx.filter(x => x.noteId !== noteId);
+        try { await Workspace.writeJSON(notesDir, "_index.json", idx); } catch {}
+      } else {
+        await DB.del(NOTE_STORE, `note:${noteId}`);
+        let idx = await notes_index_get();
+        if (!Array.isArray(idx)) idx = [];
+        idx = idx.filter(x => x.noteId !== noteId);
+        await notes_index_set(idx);
+      }
+      try { await Store.auditAppend({ type: "note.delete", msg: `Deleted note ${noteId}` }); } catch {}
+    }
+
+    // =================
+    // EVIDENCE STORAGE
+    // =================
+    // Fallback uses existing stores:
+    // - bags/meta + bag index -> "reports"
+    // - file blobs -> "osintHistory"
+    const BAG_STORE = "reports";
+    const BAG_INDEX_KEY = "evidence:index";
+    const FILE_STORE = "osintHistory"; // stores blobs as {blob,name,type,size}
+
+    async function bags_index_get() {
+      return (await DB.get(BAG_STORE, BAG_INDEX_KEY)) || [];
+    }
+    async function bags_index_set(list) {
+      await DB.set(BAG_STORE, BAG_INDEX_KEY, list);
+    }
+
+    async function bags_list() {
+      if (Store.state.mode === "workspace") {
+        const eDir = await ensureDir(Store.state.rootHandle, "evidence");
+        // index first
+        try {
+          const idx = await Workspace.readJSON(eDir, "_index.json");
+          if (Array.isArray(idx)) return idx;
+        } catch {}
+
+        // else build by scanning directories (one level)
+        const ent = await Workspace.listEntries(eDir);
+        const out = [];
+        for (const d of (ent.dirs || []).slice(0, 2000)) {
+          try {
+            const bagDir = await eDir.getDirectoryHandle(d, { create: false });
+            const meta = await Workspace.readJSON(bagDir, "bag.json");
+            out.push({
+              bagKey: d,
+              label: meta.label || d,
+              date: meta.date || "",
+              caseId: meta.caseId || "",
+              caseNumber: meta.caseNumber || "",
+              createdBy: meta.createdBy || "",
+              createdAt: meta.createdAt || "",
+              updatedAt: meta.updatedAt || ""
+            });
+          } catch {}
+        }
+        out.sort((a,b)=>String(b.updatedAt||"").localeCompare(String(a.updatedAt||"")));
+        try { await Workspace.writeJSON(eDir, "_index.json", out); } catch {}
+        return out;
+      }
+
+      // Fallback
+      const idx = await bags_index_get();
+      if (Array.isArray(idx) && idx.length) return idx;
+
+      const keys = await DB.keys(BAG_STORE);
+      const out = [];
+      for (const k of keys) {
+        if (String(k).startsWith("bag:")) {
+          const b = await DB.get(BAG_STORE, k);
+          if (b) out.push(b);
+        }
+      }
+      out.sort((a,b)=>String(b.updatedAt||"").localeCompare(String(a.updatedAt||"")));
+      await bags_index_set(out);
+      return out;
+    }
+
+    async function bag_get(bagKeyOrId) {
+      if (Store.state.mode === "workspace") {
+        const eDir = await ensureDir(Store.state.rootHandle, "evidence");
+        const bagDir = await eDir.getDirectoryHandle(bagKeyOrId, { create: true });
+        const meta = await Workspace.readJSON(bagDir, "bag.json").catch(() => ({}));
+        const manifest = await Workspace.readJSON(bagDir, "manifest.json").catch(() => ([]));
+        return { ...meta, bagKey: bagKeyOrId, items: Array.isArray(manifest) ? manifest : [] };
+      }
+
+      const meta = await DB.get(BAG_STORE, `bag:${bagKeyOrId}`);
+      const items = (await DB.get(BAG_STORE, `bagitems:${bagKeyOrId}`)) || [];
+      return { ...(meta || {}), bagKey: bagKeyOrId, items: Array.isArray(items) ? items : [] };
+    }
+
+    async function bag_upsert(bag) {
+      const b = { ...bag, updatedAt: nowISO() };
+
+      if (Store.state.mode === "workspace") {
+        const eDir = await ensureDir(Store.state.rootHandle, "evidence");
+        const bagDir = await eDir.getDirectoryHandle(b.bagKey, { create: true });
+
+        const meta = {
+          bagKey: b.bagKey,
+          label: b.label || b.bagKey,
+          date: b.date || "",
+          caseId: b.caseId || "",
+          caseNumber: b.caseNumber || "",
+          createdBy: b.createdBy || "",
+          notes: b.notes || "",
+          createdAt: b.createdAt || nowISO(),
+          updatedAt: b.updatedAt
+        };
+
+        await Workspace.writeJSON(bagDir, "bag.json", meta);
+        await Workspace.writeJSON(bagDir, "manifest.json", Array.isArray(b.items) ? b.items : []);
+
+        let idx = [];
+        try { idx = await Workspace.readJSON(eDir, "_index.json"); } catch {}
+        if (!Array.isArray(idx)) idx = [];
+        const slim = {
+          bagKey: b.bagKey,
+          label: meta.label,
+          date: meta.date,
+          caseId: meta.caseId,
+          caseNumber: meta.caseNumber,
+          createdBy: meta.createdBy,
+          createdAt: meta.createdAt,
+          updatedAt: meta.updatedAt
+        };
+        const i = idx.findIndex(x => x.bagKey === b.bagKey);
+        if (i >= 0) idx[i] = slim; else idx.unshift(slim);
+        idx.sort((a,c)=>String(c.updatedAt||"").localeCompare(String(a.updatedAt||"")));
+        await Workspace.writeJSON(eDir, "_index.json", idx.slice(0, 4000));
+
+      } else {
+        // Fallback
+        const slim = {
+          bagKey: b.bagKey,
+          label: b.label || b.bagKey,
+          date: b.date || "",
+          caseId: b.caseId || "",
+          caseNumber: b.caseNumber || "",
+          createdBy: b.createdBy || "",
+          notes: b.notes || "",
+          createdAt: b.createdAt || nowISO(),
+          updatedAt: b.updatedAt
+        };
+        await DB.set(BAG_STORE, `bag:${b.bagKey}`, slim);
+        await DB.set(BAG_STORE, `bagitems:${b.bagKey}`, Array.isArray(b.items) ? b.items : []);
+
+        let idx = await bags_index_get();
+        if (!Array.isArray(idx)) idx = [];
+        const i = idx.findIndex(x => x.bagKey === b.bagKey);
+        if (i >= 0) idx[i] = slim; else idx.unshift(slim);
+        idx.sort((a,c)=>String(c.updatedAt||"").localeCompare(String(a.updatedAt||"")));
+        await bags_index_set(idx.slice(0, 4000));
+      }
+
+      try { await Store.auditAppend({ type: "evidence.upsert", msg: `Saved bag ${b.bagKey}` }); } catch {}
+      return b;
+    }
+
+    async function bag_delete(bagKeyOrId) {
+      if (Store.state.mode === "workspace") {
+        const eDir = await ensureDir(Store.state.rootHandle, "evidence");
+        try { await eDir.removeEntry(bagKeyOrId, { recursive: true }); } catch {}
+        let idx = [];
+        try { idx = await Workspace.readJSON(eDir, "_index.json"); } catch {}
+        if (!Array.isArray(idx)) idx = [];
+        idx = idx.filter(x => x.bagKey !== bagKeyOrId);
+        try { await Workspace.writeJSON(eDir, "_index.json", idx); } catch {}
+      } else {
+        await DB.del(BAG_STORE, `bag:${bagKeyOrId}`);
+        await DB.del(BAG_STORE, `bagitems:${bagKeyOrId}`);
+
+        // delete blobs
+        const keys = await DB.keys(FILE_STORE);
+        for (const k of keys) {
+          if (String(k).startsWith(`evfile:${bagKeyOrId}:`)) await DB.del(FILE_STORE, k);
+        }
+
+        let idx = await bags_index_get();
+        if (!Array.isArray(idx)) idx = [];
+        idx = idx.filter(x => x.bagKey !== bagKeyOrId);
+        await bags_index_set(idx);
+      }
+      try { await Store.auditAppend({ type: "evidence.delete", msg: `Deleted bag ${bagKeyOrId}` }); } catch {}
+    }
+
+    async function bag_add_files(bagKey, files) {
+      const arr = Array.from(files || []);
+      if (!arr.length) return [];
+
+      const bag = await bag_get(bagKey);
+      const items = Array.isArray(bag.items) ? bag.items : [];
+
+      if (Store.state.mode === "workspace") {
+        const eDir = await ensureDir(Store.state.rootHandle, "evidence");
+        const bagDir = await eDir.getDirectoryHandle(bagKey, { create: true });
+
+        for (const f of arr) {
+          const id = uid("evf");
+          const safe = sanitizeFilename(f.name);
+          const stored = `${id}__${safe}`;
+          await Workspace.writeFile(bagDir, stored, f);
+          items.unshift({
+            id,
+            storedName: stored,
+            originalName: f.name,
+            mime: f.type || "",
+            size: f.size || 0,
+            addedAt: nowISO(),
+            note: ""
+          });
+        }
+
+        bag.items = items;
+        await bag_upsert(bag);
+        return items;
+      }
+
+      // Fallback: store blobs in FILE_STORE
+      for (const f of arr) {
+        const id = uid("evf");
+        await DB.set(FILE_STORE, `evfile:${bagKey}:${id}`, {
+          blob: f,
+          name: f.name,
+          type: f.type || "",
+          size: f.size || 0
+        });
+        items.unshift({
+          id,
+          originalName: f.name,
+          mime: f.type || "",
+          size: f.size || 0,
+          addedAt: nowISO(),
+          note: ""
+        });
+      }
+
+      bag.items = items;
+      await bag_upsert(bag);
+      return items;
+    }
+
+    async function bag_get_file_url(bagKey, item) {
+      try {
+        if (Store.state.mode === "workspace") {
+          const eDir = await ensureDir(Store.state.rootHandle, "evidence");
+          const bagDir = await eDir.getDirectoryHandle(bagKey, { create: false });
+          const f = await Workspace.readFile(bagDir, item.storedName);
+          return URL.createObjectURL(f);
+        }
+        const rec = await DB.get(FILE_STORE, `evfile:${bagKey}:${item.id}`);
+        if (rec?.blob) return URL.createObjectURL(rec.blob);
+      } catch {}
+      return "";
+    }
+
+    // =========================
+    // NOTES UI wiring
+    // =========================
+    const noteEls = {
+      list: $("#noteList"),
+      filter: $("#noteFilter"),
+      catFilter: $("#noteCategoryFilter"),
+      btnNew: $("#btnNewNote"),
+      btnOpen: $("#btnOpenNote"),
+      btnSave: $("#btnSaveNote"),
+      btnDel: $("#btnDeleteNote"),
+      metaPill: $("#noteMetaPill"),
+      editorEmpty: $("#noteEditorEmpty"),
+      editor: $("#noteEditor"),
+      title: $("#noteTitle"),
+      category: $("#noteCategory"),
+      caseLink: $("#noteCaseLink"),
+      tags: $("#noteTags"),
+      body: $("#noteBody"),
+      idPill: $("#noteIdPill"),
+      storagePill: $("#noteStoragePill"),
+    };
+
+    let notesCache = [];
+    let activeNoteId = null;
+    let noteDirty = false;
+
+    function noteStorageLabel() {
+      return Store.state.mode === "workspace" ? "Workspace (Drive)" : "Fallback (IndexedDB)";
+    }
+
+    async function fillCaseSelect(selectEl, includeNoneText = "None") {
+      const cases = await Store.caseList();
+      selectEl.innerHTML = "";
+      const o0 = document.createElement("option");
+      o0.value = "";
+      o0.textContent = includeNoneText;
+      selectEl.appendChild(o0);
+
+      for (const c of cases) {
+        const o = document.createElement("option");
+        o.value = c.caseId;
+        o.textContent = `${c.caseNumber ? `[${c.caseNumber}] ` : ""}${c.title || c.caseId}`;
+        o.dataset.caseNumber = c.caseNumber || "";
+        selectEl.appendChild(o);
+      }
+    }
+
+    function setNoteEditorVisible(on) {
+      noteEls.editorEmpty.hidden = !!on;
+      noteEls.editor.hidden = !on;
+      noteEls.btnDel.disabled = !on;
+      noteEls.btnSave.disabled = !on || !noteDirty;
+    }
+
+    function setNoteDirty(on) {
+      noteDirty = !!on;
+      noteEls.btnSave.disabled = !activeNoteId || !noteDirty;
+    }
+
+    function noteSlimTitle(n) {
+      const cat = n.category ? `[${n.category}] ` : "";
+      const cn = n.caseNumber ? `${n.caseNumber} — ` : "";
+      return `${cat}${cn}${n.title || n.noteId}`;
+    }
+
+    async function notes_render_list() {
+      noteEls.storagePill.textContent = `Storage: ${noteStorageLabel()}`;
+
+      notesCache = await notes_list();
+      const q = (noteEls.filter.value || "").trim().toLowerCase();
+      const cat = noteEls.catFilter.value || "";
+
+      const filtered = notesCache.filter(n => {
+        const hay = `${n.title||""} ${n.category||""} ${(n.tags||[]).join(" ")} ${n.caseNumber||""} ${n.caseId||""}`.toLowerCase();
+        if (q && !hay.includes(q)) return false;
+        if (cat && (n.category||"") !== cat) return false;
+        return true;
+      });
+
+      noteEls.list.innerHTML = "";
+      if (!filtered.length) {
+        const empty = document.createElement("div");
+        empty.className = "muted";
+        empty.textContent = "No notes yet.";
+        noteEls.list.appendChild(empty);
+        return;
+      }
+
+      for (const n of filtered) {
+        const it = document.createElement("div");
+        it.className = "item";
+        it.classList.toggle("active", activeNoteId === n.noteId);
+
+        const t = document.createElement("div");
+        t.textContent = noteSlimTitle(n);
+
+        const meta = document.createElement("div");
+        meta.className = "meta";
+        if (n.updatedAt) meta.appendChild(Object.assign(document.createElement("span"), { textContent: `Updated ${formatMiniDate(n.updatedAt)}` }));
+        if (n.createdBy) meta.appendChild(Object.assign(document.createElement("span"), { textContent: `By ${n.createdBy}` }));
+        if (n.tags?.length) meta.appendChild(Object.assign(document.createElement("span"), { textContent: `#${n.tags.join(" #")}` }));
+
+        it.appendChild(t);
+        it.appendChild(meta);
+
+        it.addEventListener("click", async () => {
+          if (noteDirty) {
+            Toasts.push({ title: "Notes", message: "Save or discard changes before switching notes." });
+            return;
+          }
+          await notes_open(n.noteId);
+          await notes_render_list();
+        });
+
+        noteEls.list.appendChild(it);
+      }
+    }
+
+    async function notes_open(noteId) {
+      const n = await notes_get(noteId);
+      activeNoteId = n.noteId;
+
+      await fillCaseSelect(noteEls.caseLink, "None");
+      noteEls.caseLink.value = n.caseId || "";
+
+      noteEls.title.value = n.title || "";
+      noteEls.category.value = n.category || "Other";
+      noteEls.tags.value = Array.isArray(n.tags) ? n.tags.join(", ") : "";
+      noteEls.body.value = n.body || "";
+
+      noteEls.idPill.textContent = `Note: ${n.noteId}`;
+      noteEls.storagePill.textContent = `Storage: ${noteStorageLabel()}`;
+      noteEls.metaPill.textContent = `Created ${formatMiniDate(n.createdAt)} • Updated ${formatMiniDate(n.updatedAt)} • By ${n.createdBy || "—"}`;
+
+      setNoteEditorVisible(true);
+      setNoteDirty(false);
+    }
+
+    function note_draft(existing) {
+      const caseId = noteEls.caseLink.value || "";
+      const opt = noteEls.caseLink.selectedOptions?.[0];
+      const caseNumber = opt?.dataset?.caseNumber || "";
+
+      return {
+        noteId: activeNoteId,
+        title: safeText(noteEls.title.value, 240) || "Untitled",
+        category: noteEls.category.value || "Other",
+        tags: csvTags(noteEls.tags.value),
+        caseId,
+        caseNumber,
+        body: safeText(noteEls.body.value, 200000),
+        createdAt: existing?.createdAt || nowISO(),
+        updatedAt: nowISO(),
+        createdBy: existing?.createdBy || (sessionStorage.getItem("sinners_user") || "Admin")
+      };
+    }
+
+    async function notes_new() {
+      const id = uid("note");
+      activeNoteId = id;
+
+      await fillCaseSelect(noteEls.caseLink, "None");
+      noteEls.caseLink.value = "";
+
+      noteEls.title.value = "";
+      noteEls.category.value = "Other";
+      noteEls.tags.value = "";
+      noteEls.body.value = "";
+
+      noteEls.idPill.textContent = `Note: ${id}`;
+      noteEls.storagePill.textContent = `Storage: ${noteStorageLabel()}`;
+      noteEls.metaPill.textContent = "New note (not saved yet)";
+
+      setNoteEditorVisible(true);
+      setNoteDirty(true);
+
+      Toasts.push({ title: "Notes", message: "New note ready. Type then hit Save." });
+      await notes_render_list();
+    }
+
+    async function notes_save() {
+      if (!activeNoteId) return;
+      let existing = null;
+      try { existing = await notes_get(activeNoteId); } catch {}
+      const draft = note_draft(existing);
+      await notes_upsert(draft);
+      Toasts.push({ title: "Notes", message: "Saved." });
+      setNoteDirty(false);
+      await notes_render_list();
+      await notes_open(activeNoteId);
+    }
+
+    async function notes_delete_ui() {
+      if (!activeNoteId) return;
+      const id = activeNoteId;
+
+      Modal.open({
+        title: "Delete Note",
+        body: `Delete note "${id}"? This cannot be undone.`,
+        actions: [
+          { label: "Cancel" },
+          {
+            label: "Delete",
+            primary: true,
+            onClick: async () => {
+              await notes_delete(id);
+              Toasts.push({ title: "Notes", message: "Deleted." });
+              activeNoteId = null;
+              noteEls.metaPill.textContent = "No note loaded";
+              noteEls.idPill.textContent = "Note: none";
+              setNoteEditorVisible(false);
+              setNoteDirty(false);
+              await notes_render_list();
+            }
+          }
+        ]
+      });
+    }
+
+    // Notes events
+    noteEls.btnNew?.addEventListener("click", notes_new);
+    noteEls.btnOpen?.addEventListener("click", async () => {
+      await notes_render_list();
+      Toasts.push({ title: "Notes", message: "Click a note in the list to open." });
+    });
+    noteEls.btnSave?.addEventListener("click", notes_save);
+    noteEls.btnDel?.addEventListener("click", notes_delete_ui);
+
+    noteEls.filter?.addEventListener("input", () => notes_render_list());
+    noteEls.catFilter?.addEventListener("change", () => notes_render_list());
+
+    [noteEls.title, noteEls.category, noteEls.caseLink, noteEls.tags, noteEls.body].forEach(el => {
+      if (!el) return;
+      el.addEventListener("input", () => { if (activeNoteId) setNoteDirty(true); });
+      el.addEventListener("change", () => { if (activeNoteId) setNoteDirty(true); });
+    });
+
+    // =========================
+    // EVIDENCE UI wiring
+    // =========================
+    const bagEls = {
+      list: $("#bagList"),
+      filter: $("#bagFilter"),
+      caseFilter: $("#bagCaseFilter"),
+      btnNew: $("#btnNewBag"),
+      btnUpload: $("#btnUploadEvidence"),
+      btnSave: $("#btnSaveBag"),
+      btnDel: $("#btnDeleteBag"),
+      fileInput: $("#evidenceFileInput"),
+      metaPill: $("#bagMetaPill"),
+      detailEmpty: $("#bagDetailEmpty"),
+      detail: $("#bagDetail"),
+      label: $("#bagLabel"),
+      date: $("#bagDate"),
+      caseLink: $("#bagCaseLink"),
+      by: $("#bagBy"),
+      notes: $("#bagNotes"),
+      items: $("#bagItems"),
+      idPill: $("#bagIdPill"),
+      storagePill: $("#bagStoragePill")
+    };
+
+    let bagsCache = [];
+    let activeBagKey = null;
+    let bagDirty = false;
+    let urlCache = new Map(); // itemId -> url
+
+    function bagStorageLabel() {
+      return Store.state.mode === "workspace" ? "Workspace (Drive)" : "Fallback (IndexedDB)";
+    }
+
+    function setBagEditorVisible(on) {
+      bagEls.detailEmpty.hidden = !!on;
+      bagEls.detail.hidden = !on;
+      bagEls.btnUpload.disabled = !on;
+      bagEls.btnSave.disabled = !on || !bagDirty;
+      bagEls.btnDel.disabled = !on;
+    }
+
+    function setBagDirty(on) {
+      bagDirty = !!on;
+      bagEls.btnSave.disabled = !activeBagKey || !bagDirty;
+    }
+
+    async function bags_render_list() {
+      bagEls.storagePill.textContent = `Storage: ${bagStorageLabel()}`;
+
+      // Fill case dropdowns
+      await (async () => {
+        const cases = await Store.caseList();
+
+        // case filter
+        bagEls.caseFilter.innerHTML = "";
+        const a0 = document.createElement("option");
+        a0.value = "";
+        a0.textContent = "All cases";
+        bagEls.caseFilter.appendChild(a0);
+        for (const c of cases) {
+          const o = document.createElement("option");
+          o.value = c.caseId;
+          o.textContent = `${c.caseNumber ? `[${c.caseNumber}] ` : ""}${c.title || c.caseId}`;
+          o.dataset.caseNumber = c.caseNumber || "";
+          bagEls.caseFilter.appendChild(o);
+        }
+
+        // bag case link
+        bagEls.caseLink.innerHTML = "";
+        const n0 = document.createElement("option");
+        n0.value = "";
+        n0.textContent = "None";
+        bagEls.caseLink.appendChild(n0);
+        for (const c of cases) {
+          const o = document.createElement("option");
+          o.value = c.caseId;
+          o.textContent = `${c.caseNumber ? `[${c.caseNumber}] ` : ""}${c.title || c.caseId}`;
+          o.dataset.caseNumber = c.caseNumber || "";
+          bagEls.caseLink.appendChild(o);
+        }
+      })();
+
+      bagsCache = await bags_list();
+      const q = (bagEls.filter.value || "").trim().toLowerCase();
+      const cf = bagEls.caseFilter.value || "";
+
+      const filtered = bagsCache.filter(b => {
+        const hay = `${b.label||""} ${b.date||""} ${b.caseNumber||""} ${b.caseId||""}`.toLowerCase();
+        if (q && !hay.includes(q)) return false;
+        if (cf && (b.caseId || "") !== cf) return false;
+        return true;
+      });
+
+      bagEls.list.innerHTML = "";
+      if (!filtered.length) {
+        const empty = document.createElement("div");
+        empty.className = "muted";
+        empty.textContent = "No evidence bags yet.";
+        bagEls.list.appendChild(empty);
+        return;
+      }
+
+      for (const b of filtered) {
+        const it = document.createElement("div");
+        it.className = "item";
+        it.classList.toggle("active", activeBagKey === b.bagKey);
+
+        const t = document.createElement("div");
+        t.textContent = `${b.date ? `${b.date} — ` : ""}${b.caseNumber ? `${b.caseNumber} — ` : ""}${b.label || b.bagKey}`;
+
+        const meta = document.createElement("div");
+        meta.className = "meta";
+        if (b.updatedAt) meta.appendChild(Object.assign(document.createElement("span"), { textContent: `Updated ${formatMiniDate(b.updatedAt)}` }));
+        if (b.createdBy) meta.appendChild(Object.assign(document.createElement("span"), { textContent: `By ${b.createdBy}` }));
+
+        it.appendChild(t);
+        it.appendChild(meta);
+
+        it.addEventListener("click", async () => {
+          if (bagDirty) {
+            Toasts.push({ title: "Evidence", message: "Save or discard changes before switching bags." });
+            return;
+          }
+          await bag_open(b.bagKey);
+          await bags_render_list();
+        });
+
+        bagEls.list.appendChild(it);
+      }
+    }
+
+    async function bag_open(bagKey) {
+      // clear URLs
+      for (const u of urlCache.values()) { try { URL.revokeObjectURL(u); } catch {} }
+      urlCache.clear();
+
+      const b = await bag_get(bagKey);
+      activeBagKey = bagKey;
+
+      bagEls.label.value = b.label || "";
+      bagEls.date.value = b.date || "";
+      bagEls.by.value = b.createdBy || (sessionStorage.getItem("sinners_user") || "Admin");
+      bagEls.notes.value = b.notes || "";
+      bagEls.caseLink.value = b.caseId || "";
+
+      bagEls.idPill.textContent = `Bag: ${bagKey}`;
+      bagEls.storagePill.textContent = `Storage: ${bagStorageLabel()}`;
+      bagEls.metaPill.textContent = `Created ${formatMiniDate(b.createdAt || nowISO())} • Updated ${formatMiniDate(b.updatedAt || nowISO())}`;
+
+      setBagEditorVisible(true);
+      setBagDirty(false);
+
+      await bag_render_items(bagKey, Array.isArray(b.items) ? b.items : []);
+    }
+
+    async function bag_render_items(bagKey, items) {
+      bagEls.items.innerHTML = "";
+      if (!items.length) {
+        const empty = document.createElement("div");
+        empty.className = "muted";
+        empty.textContent = "No files yet. Upload images/PDFs/text and add notes per file.";
+        bagEls.items.appendChild(empty);
+        return;
+      }
+
+      for (const item of items) {
+        const wrap = document.createElement("div");
+        wrap.className = "bag-item";
+
+        const head = document.createElement("div");
+        head.className = "bag-item-head";
+
+        const left = document.createElement("div");
+        const name = document.createElement("div");
+        name.style.fontWeight = "700";
+        name.textContent = item.originalName || item.storedName || item.id;
+
+        const meta = document.createElement("div");
+        meta.className = "muted";
+        meta.style.fontSize = "12px";
+        meta.textContent = `${item.mime || "file"} • ${item.size ? `${item.size} bytes` : ""} • ${item.addedAt ? formatMiniDate(item.addedAt) : ""}`;
+
+        left.appendChild(name);
+        left.appendChild(meta);
+
+        const right = document.createElement("div");
+        right.className = "pill";
+        right.textContent = item.id;
+
+        head.appendChild(left);
+        head.appendChild(right);
+
+        // Preview thumb for images
+        const isImg = (item.mime || "").startsWith("image/");
+        const isPdf = (item.mime || "") === "application/pdf";
+
+        if (isImg) {
+          const row = document.createElement("div");
+          row.className = "row gap";
+          row.style.alignItems = "flex-start";
+          row.style.marginTop = "10px";
+
+          const thumb = document.createElement("div");
+          thumb.className = "thumb";
+          const img = document.createElement("img");
+          img.alt = "preview";
+
+          const url = await bag_get_file_url(bagKey, item);
+          if (url) { urlCache.set(item.id, url); img.src = url; }
+
+          thumb.appendChild(img);
+          row.appendChild(thumb);
+
+          const noteWrap = document.createElement("div");
+          noteWrap.className = "bag-item-note";
+          noteWrap.style.flex = "1";
+
+          const ta = document.createElement("textarea");
+          ta.value = item.note || "";
+          ta.placeholder = "Per-file notes (what is this image / why it matters)…";
+          ta.addEventListener("input", () => {
+            item.note = safeText(ta.value, 2000);
+            setBagDirty(true);
+          });
+
+          noteWrap.appendChild(ta);
+          row.appendChild(noteWrap);
+
+          wrap.appendChild(head);
+          wrap.appendChild(row);
+        } else {
+          wrap.appendChild(head);
+
+          // PDF/link action
+          if (isPdf) {
+            const url = await bag_get_file_url(bagKey, item);
+            if (url) {
+              urlCache.set(item.id, url);
+              const a = document.createElement("a");
+              a.className = "btn ghost";
+              a.href = url;
+              a.target = "_blank";
+              a.rel = "noopener noreferrer";
+              a.textContent = "Open PDF";
+              a.style.marginTop = "10px";
+              wrap.appendChild(a);
+            }
+          }
+
+          // Notes text area
+          const ta = document.createElement("textarea");
+          ta.value = item.note || "";
+          ta.placeholder = "Per-file notes…";
+          ta.style.marginTop = "10px";
+          ta.addEventListener("input", () => {
+            item.note = safeText(ta.value, 2000);
+            setBagDirty(true);
+          });
+          wrap.appendChild(ta);
+        }
+
+        bagEls.items.appendChild(wrap);
+      }
+    }
+
+    function bag_draft(existing, items) {
+      const caseId = bagEls.caseLink.value || "";
+      const opt = bagEls.caseLink.selectedOptions?.[0];
+      const caseNumber = opt?.dataset?.caseNumber || "";
+
+      return {
+        bagKey: activeBagKey,
+        label: safeText(bagEls.label.value, 120) || existing?.label || activeBagKey,
+        date: safeText(bagEls.date.value, 32) || existing?.date || "",
+        caseId,
+        caseNumber,
+        createdBy: safeText(bagEls.by.value, 80) || existing?.createdBy || (sessionStorage.getItem("sinners_user") || "Admin"),
+        notes: safeText(bagEls.notes.value, 8000) || "",
+        createdAt: existing?.createdAt || nowISO(),
+        updatedAt: nowISO(),
+        items: Array.isArray(items) ? items : []
+      };
+    }
+
+    async function bag_new() {
+      const label = `Evidence_${new Date().toISOString().slice(0,10)}`;
+      const folder = sanitizeFolderName(label) || uid("bag");
+
+      // ensure uniqueness in workspace
+      let bagKey = folder;
+      if (Store.state.mode === "workspace") {
+        try {
+          const eDir = await ensureDir(Store.state.rootHandle, "evidence");
+          let attempt = bagKey, n = 2;
+          while (true) {
+            try { await eDir.getDirectoryHandle(attempt, { create: false }); attempt = `${bagKey}_${n++}`; }
+            catch { bagKey = attempt; break; }
+          }
+        } catch {}
+      } else {
+        // in fallback we can just use uid for unique
+        bagKey = uid("bag");
+      }
+
+      const meta = {
+        bagKey,
+        label: label,
+        date: new Date().toISOString().slice(0,10),
+        caseId: "",
+        caseNumber: "",
+        createdBy: sessionStorage.getItem("sinners_user") || "Admin",
+        notes: "",
+        createdAt: nowISO(),
+        updatedAt: nowISO(),
+        items: []
+      };
+
+      await bag_upsert(meta);
+      Toasts.push({ title: "Evidence", message: "New bag created. Upload files next." });
+      await bag_open(bagKey);
+      await bags_render_list();
+    }
+
+    async function bag_save_ui() {
+      if (!activeBagKey) return;
+      const existing = await bag_get(activeBagKey);
+      const items = Array.isArray(existing.items) ? existing.items : [];
+      const draft = bag_draft(existing, items);
+      await bag_upsert(draft);
+      Toasts.push({ title: "Evidence", message: "Bag saved." });
+      setBagDirty(false);
+      await bags_render_list();
+      await bag_open(activeBagKey);
+    }
+
+    async function bag_delete_ui() {
+      if (!activeBagKey) return;
+      const key = activeBagKey;
+
+      Modal.open({
+        title: "Delete Evidence Bag",
+        body: `Delete bag "${key}"? Workspace mode deletes the folder/files too.`,
+        actions: [
+          { label: "Cancel" },
+          {
+            label: "Delete",
+            primary: true,
+            onClick: async () => {
+              await bag_delete(key);
+              Toasts.push({ title: "Evidence", message: "Deleted." });
+              activeBagKey = null;
+              setBagEditorVisible(false);
+              setBagDirty(false);
+              bagEls.metaPill.textContent = "No bag loaded";
+              bagEls.idPill.textContent = "Bag: none";
+              await bags_render_list();
+            }
+          }
+        ]
+      });
+    }
+
+    async function bag_upload_click() {
+      if (!activeBagKey) return;
+      bagEls.fileInput.click();
+    }
+
+    bagEls.fileInput?.addEventListener("change", async () => {
+      if (!activeBagKey) return;
+      const files = bagEls.fileInput.files;
+      if (!files || !files.length) return;
+
+      Toasts.push({ title: "Evidence", message: "Uploading…" });
+      await bag_add_files(activeBagKey, files);
+      bagEls.fileInput.value = "";
+      await bag_open(activeBagKey);
+      await bags_render_list();
+      setBagDirty(false);
+      Toasts.push({ title: "Evidence", message: "Upload complete." });
+    });
+
+    bagEls.btnNew?.addEventListener("click", bag_new);
+    bagEls.btnUpload?.addEventListener("click", bag_upload_click);
+    bagEls.btnSave?.addEventListener("click", bag_save_ui);
+    bagEls.btnDel?.addEventListener("click", bag_delete_ui);
+
+    bagEls.filter?.addEventListener("input", () => bags_render_list());
+    bagEls.caseFilter?.addEventListener("change", () => bags_render_list());
+
+    [bagEls.label, bagEls.date, bagEls.caseLink, bagEls.by, bagEls.notes].forEach(el => {
+      if (!el) return;
+      el.addEventListener("input", () => { if (activeBagKey) setBagDirty(true); });
+      el.addEventListener("change", () => { if (activeBagKey) setBagDirty(true); });
+    });
+
+    // =========================
+    // Route hook: render lists on navigation
+    // =========================
+    const _nav = nav;
+    nav = (route) => {
+      _nav(route);
+
+      // defer to allow showPage() to toggle
+      setTimeout(async () => {
+        if (route === "notes") {
+          try {
+            await fillCaseSelect(noteEls.caseLink, "None");
+            await notes_render_list();
+            noteEls.storagePill.textContent = `Storage: ${noteStorageLabel()}`;
+          } catch (e) {
+            Toasts.push({ title: "Notes", message: `Error: ${String(e?.message || e)}` });
+          }
+        }
+
+        if (route === "evidence") {
+          try {
+            await bags_render_list();
+            bagEls.storagePill.textContent = `Storage: ${bagStorageLabel()}`;
+          } catch (e) {
+            Toasts.push({ title: "Evidence", message: `Error: ${String(e?.message || e)}` });
+          }
+        }
+      }, 0);
+    };
+
+    // Initial paint safety: if someone reloads on notes/evidence route later
+    // (Your app currently sets a default route, but this prevents blank states.)
+    setTimeout(async () => {
+      if (AppState?.activeRoute === "notes") await notes_render_list();
+      if (AppState?.activeRoute === "evidence") await bags_render_list();
+    }, 400);
+  })();
+
+  /* =========================================================
+   FORWARD (OUTLOOK) ADD-ON — paste above final "})();"
+   - Adds Forward buttons for Note/Case/Report
+   - Exports JSON and opens Outlook compose prefilled
+   - User manually attaches downloaded JSON (browser limitation)
+   ========================================================= */
+(() => {
+  // ---------- Config ----------
+  const OUTLOOK_COMPOSE = "https://outlook.office.com/mail/deeplink/compose";
+
+  // ---------- Helpers ----------
+  const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
+  const $ = (sel, root = document) => root.querySelector(sel);
+  const nowISO = () => new Date().toISOString();
+
+  function safeText(s, max = 5000) {
+    return String(s ?? "").replace(/\r/g, "").slice(0, max);
+  }
+
+  function downloadJSON(filename, obj) {
+    const blob = new Blob([JSON.stringify(obj, null, 2)], { type: "application/json" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1500);
+  }
+
+  function openOutlookCompose({ to = "", subject = "", body = "" }) {
+    // Outlook web compose URL params
+    const url = new URL(OUTLOOK_COMPOSE);
+    if (to) url.searchParams.set("to", to);
+    if (subject) url.searchParams.set("subject", subject);
+    if (body) url.searchParams.set("body", body);
+    window.open(url.toString(), "_blank", "noopener,noreferrer");
+  }
+
+  function promptEmail(defaultEmail = "") {
+    // Simple & fast. You can later upgrade to a modal + contact list.
+    const email = window.prompt("Forward to (investigator email):", defaultEmail);
+    return (email || "").trim();
+  }
+
+  // ---------- UI Injection (adds buttons in page-head rows) ----------
+  function injectForwardButton(pageId, buttonId, label) {
+    const page = document.getElementById(pageId);
+    if (!page) return null;
+
+    // Find the first ".page-head .row.gap" button row inside this page
+    const head = page.querySelector(".page-head");
+    if (!head) return null;
+    const row = head.querySelector(".row.gap");
+    if (!row) return null;
+
+    // Avoid duplicates
+    if (document.getElementById(buttonId)) return document.getElementById(buttonId);
+
+    const btn = document.createElement("button");
+    btn.className = "btn ghost";
+    btn.id = buttonId;
+    btn.textContent = label;
+
+    // Put it near the end
+    row.appendChild(btn);
+    return btn;
+  }
+
+  // Add buttons
+  const btnForwardNote = injectForwardButton("page-notes", "btnForwardNote", "Forward Note");
+  const btnForwardCase = injectForwardButton("page-cases", "btnForwardCase", "Forward Case");
+  const btnForwardReport = injectForwardButton("page-reports", "btnForwardReport", "Forward Report");
+
+  // ---------- State access ----------
+  // We depend on your existing globals created earlier in the file:
+  // - AppState (active note/report/case selections)
+  // - Store (caseGet/reportGet/etc)
+  // - notes_get (or Store.noteGet) if you used the Notes add-on
+  // If any are missing, we fail gracefully.
+
+  function toast(title, message) {
+    try {
+      Toasts.push({ title, message });
+    } catch {
+      alert(`${title}\n\n${message}`);
+    }
+  }
+
+  // ---------- Forward NOTE ----------
+  btnForwardNote?.addEventListener("click", async () => {
+    try {
+      // Determine the current note id
+      let noteId = null;
+
+      // If you used the Notes add-on I gave earlier, it stores local "activeNoteId"
+      // but inside that closure. So instead we infer from the UI pill when possible.
+      const pill = document.getElementById("noteIdPill");
+      const pillText = pill?.textContent || "";
+      const match = pillText.match(/Note:\s*(.+)$/i);
+      if (match) noteId = match[1].trim();
+
+      // Fallback: try AppState.note.noteId if your main script has it
+      if (!noteId && typeof AppState !== "undefined") {
+        noteId = AppState?.note?.noteId || null;
+      }
+
+      if (!noteId || noteId === "none") {
+        toast("Forward", "Open a note first.");
+        return;
+      }
+
+      // Pull note payload
+      let note = null;
+      if (typeof notes_get === "function") note = await notes_get(noteId);
+      else if (typeof Store !== "undefined" && typeof Store.noteGet === "function") note = await Store.noteGet(noteId);
+      else {
+        toast("Forward", "Note storage API not found in script. (notes_get / Store.noteGet missing)");
+        return;
+      }
+
+      const to = promptEmail("");
+      if (!to) return;
+
+      const filename = `sinners_note_${note.noteId}.json`;
+      const exported = {
+        exportType: "SINNERS_NOTE",
+        exportedAt: nowISO(),
+        payload: note
+      };
+
+      // Download JSON (user will attach it in Outlook)
+      downloadJSON(filename, exported);
+
+      const subject = `SINNERS NOTE: ${safeText(note.title || note.noteId, 120)}`;
+      const body =
+`SINNERS Forward — NOTE
+
+From: ${safeText(note.createdBy || "Unknown", 120)}
+Created: ${safeText(note.createdAt || "", 60)}
+Updated: ${safeText(note.updatedAt || "", 60)}
+Category: ${safeText(note.category || "Other", 40)}
+Linked Case: ${safeText(note.caseNumber || note.caseId || "None", 80)}
+
+ATTACHMENT:
+- ${filename}
+
+INSTRUCTIONS:
+1) Attach the downloaded JSON file to this email.
+2) Receiver opens SINNERS → Settings → Import Bundle OR Notes → Import (if you add that later).
+3) It will recreate the note with original author + timestamps.
+
+(Attachments cannot be auto-added by browser for security. This is expected.)`;
+
+      openOutlookCompose({ to, subject, body });
+      toast("Forward", "Downloaded export + opened Outlook compose. Attach the JSON and send.");
+    } catch (e) {
+      toast("Forward Error", String(e?.message || e));
+    }
+  });
+
+  // ---------- Forward CASE ----------
+  btnForwardCase?.addEventListener("click", async () => {
+    try {
+      let caseId = null;
+
+      // Prefer selected case from AppState if present
+      if (typeof AppState !== "undefined") {
+        caseId = AppState?.selectedCaseId || AppState?.activeCaseId || null;
+      }
+
+      if (!caseId) {
+        toast("Forward", "Select a case first (Cases page) or set an active case.");
+        return;
+      }
+
+      if (typeof Store === "undefined" || typeof Store.caseGet !== "function") {
+        toast("Forward", "Store.caseGet not found.");
+        return;
+      }
+
+      const c = await Store.caseGet(caseId);
+
+      const to = promptEmail("");
+      if (!to) return;
+
+      const filename = `sinners_case_${c.caseId}.json`;
+      const exported = {
+        exportType: "SINNERS_CASE",
+        exportedAt: nowISO(),
+        payload: c
+      };
+
+      downloadJSON(filename, exported);
+
+      const subject = `SINNERS CASE: ${safeText(c.caseNumber || c.title || c.caseId, 120)}`;
+      const body =
+`SINNERS Forward — CASE
+
+Case: ${safeText(c.caseNumber || "—", 80)}
+Title: ${safeText(c.title || "—", 200)}
+Status: ${safeText(c.status || "Open", 40)}
+Assigned: ${safeText(c.assigned || "", 80)}
+Updated: ${safeText(c.updatedAt || "", 60)}
+
+ATTACHMENT:
+- ${filename}
+
+INSTRUCTIONS:
+1) Attach the downloaded JSON to this email.
+2) Receiver imports it into SINNERS (import feature).
+3) Case will appear with original data and timestamps.`;
+
+      openOutlookCompose({ to, subject, body });
+      toast("Forward", "Downloaded export + opened Outlook compose. Attach the JSON and send.");
+    } catch (e) {
+      toast("Forward Error", String(e?.message || e));
+    }
+  });
+
+  // ---------- Forward REPORT ----------
+  btnForwardReport?.addEventListener("click", async () => {
+    try {
+      // Identify report id and case id.
+      // Your UI uses reportIdPill "Report: <id>" and reportCasePill "Case: <...>"
+      const reportIdPill = document.getElementById("reportIdPill");
+      const reportCasePill = document.getElementById("reportCasePill");
+
+      let reportId = null;
+      let caseId = null;
+
+      const ridText = reportIdPill?.textContent || "";
+      const ridMatch = ridText.match(/Report:\s*(.+)$/i);
+      if (ridMatch) reportId = ridMatch[1].trim();
+      if (!reportId || reportId === "none") reportId = null;
+
+      // Best source of caseId is AppState.report.caseId if it exists
+      if (typeof AppState !== "undefined") caseId = AppState?.report?.caseId || null;
+
+      if (!reportId) {
+        toast("Forward", "Load a report first (Reports page).");
+        return;
+      }
+
+      if (typeof Store === "undefined" || typeof Store.reportGet !== "function") {
+        toast("Forward", "Store.reportGet not found.");
+        return;
+      }
+
+      // Workspace mode requires caseId for reportGet in my earlier architecture.
+      let rep = null;
+      try {
+        rep = caseId ? await Store.reportGet(reportId, caseId) : await Store.reportGet(reportId);
+      } catch {
+        // If your Store.reportGet needs caseId but we don't have it, give a helpful message
+        toast("Forward", "Could not load report. If you're in Workspace Mode, make sure a case is active / report is loaded with caseId.");
+        return;
+      }
+
+      const to = promptEmail("");
+      if (!to) return;
+
+      const filename = `sinners_report_${rep.reportId}.json`;
+      const exported = {
+        exportType: "SINNERS_REPORT",
+        exportedAt: nowISO(),
+        payload: rep
+      };
+
+      downloadJSON(filename, exported);
+
+      const subject = `SINNERS REPORT: ${safeText(rep.reportNumber || rep.reportId, 120)} — ${safeText(rep.type || "Report", 120)}`;
+      const body =
+`SINNERS Forward — REPORT
+
+Report: ${safeText(rep.reportNumber || rep.reportId, 80)}
+Case: ${safeText(rep.caseNumber || rep.caseId || "", 100)}
+Type: ${safeText(rep.type || "", 120)}
+Reason: ${safeText(rep.reason || "", 120)}
+Confidence: ${safeText(rep.confidence || "", 40)}
+Updated: ${safeText(rep.updatedAt || "", 60)}
+
+ATTACHMENT:
+- ${filename}
+
+INSTRUCTIONS:
+1) Attach the downloaded JSON to this email.
+2) Receiver imports it into SINNERS (import feature).
+3) Report will load in the same format with original author/timestamps.`;
+
+      openOutlookCompose({ to, subject, body });
+      toast("Forward", "Downloaded export + opened Outlook compose. Attach the JSON and send.");
+    } catch (e) {
+      toast("Forward Error", String(e?.message || e));
+    }
+  });
+
+  // ---------- Optional: auto-refresh buttons enabling/disabling ----------
+  // We gently enable/disable based on what looks loaded.
+  function refreshForwardButtons() {
+    try {
+      // Note enabled if note pill has a real id
+      const noteP = document.getElementById("noteIdPill")?.textContent || "";
+      const noteOk = /Note:\s*(?!none\b)/i.test(noteP);
+      if (btnForwardNote) btnForwardNote.disabled = !noteOk;
+
+      // Case enabled if AppState has a selected or active case
+      const caseOk = (typeof AppState !== "undefined") && (!!AppState.selectedCaseId || !!AppState.activeCaseId);
+      if (btnForwardCase) btnForwardCase.disabled = !caseOk;
+
+      // Report enabled if reportId pill is not "none"
+      const repP = document.getElementById("reportIdPill")?.textContent || "";
+      const repOk = /Report:\s*(?!none\b)/i.test(repP);
+      if (btnForwardReport) btnForwardReport.disabled = !repOk;
+    } catch {}
+  }
+
+  // Run often enough to stay accurate without being annoying
+  setInterval(refreshForwardButtons, 800);
+  refreshForwardButtons();
+
+})();
+
+/* =========================================================
+   FORWARD NOTE FIX — paste near bottom (above final "})();")
+   Makes Forward Note work even if notes_get / Store.noteGet
+   aren't available by reading from Workspace or IndexedDB.
+   ========================================================= */
+(() => {
+  const btn = document.getElementById("btnForwardNote");
+  if (!btn) return;
+
+  // --- Remove previous listeners by cloning the button ---
+  const clone = btn.cloneNode(true);
+  btn.parentNode.replaceChild(clone, btn);
+
+  const OUTLOOK_COMPOSE = "https://outlook.office.com/mail/deeplink/compose";
+  const nowISO = () => new Date().toISOString();
+
+  function safeText(s, max = 5000) {
+    return String(s ?? "").replace(/\r/g, "").slice(0, max);
+  }
+
+  function toast(title, message) {
+    try { Toasts.push({ title, message }); }
+    catch { alert(`${title}\n\n${message}`); }
+  }
+
+  function downloadJSON(filename, obj) {
+    const blob = new Blob([JSON.stringify(obj, null, 2)], { type: "application/json" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1500);
+  }
+
+  function openOutlookCompose({ to = "", subject = "", body = "" }) {
+    const url = new URL(OUTLOOK_COMPOSE);
+    if (to) url.searchParams.set("to", to);
+    if (subject) url.searchParams.set("subject", subject);
+    if (body) url.searchParams.set("body", body);
+    window.open(url.toString(), "_blank", "noopener,noreferrer");
+  }
+
+  function promptEmail(defaultEmail = "") {
+    const email = window.prompt("Forward to (investigator email):", defaultEmail);
+    return (email || "").trim();
+  }
+
+  async function getNoteIdFromUI() {
+    const pill = document.getElementById("noteIdPill");
+    const txt = pill?.textContent || "";
+    const m = txt.match(/Note:\s*(.+)$/i);
+    if (m) return m[1].trim();
+
+    // fallback to AppState if present
+    try { return AppState?.note?.noteId || null; } catch { return null; }
+  }
+
+  async function getNoteFromStorage(noteId) {
+    // 1) Workspace mode: notes/<noteId>.json
+    try {
+      if (typeof Store !== "undefined" && Store?.state?.mode === "workspace") {
+        const notesDir = await Workspace.dir(Store.state.rootHandle, "notes");
+        const note = await Workspace.readJSON(notesDir, `${noteId}.json`);
+        if (note) return note;
+      }
+    } catch {}
+
+    // 2) IndexedDB mode: try multiple stores/keys
+    if (typeof DB === "undefined") return null;
+
+    const tries = [
+      { store: "notes", key: `note:${noteId}` },
+      { store: "cases", key: `note:${noteId}` },
+      { store: "notes", key: noteId },
+      { store: "cases", key: noteId },
+    ];
+
+    for (const t of tries) {
+      try {
+        const v = await DB.get(t.store, t.key);
+        if (v) return v;
+      } catch {}
+    }
+
+    return null;
+  }
+
+  clone.addEventListener("click", async () => {
+    try {
+      const noteId = await getNoteIdFromUI();
+      if (!noteId || noteId === "none") {
+        toast("Forward", "Open a note first.");
+        return;
+      }
+
+      const note = await getNoteFromStorage(noteId);
+      if (!note) {
+        toast("Forward", "Couldn’t find that note in storage. Save it first, then try again.");
+        return;
+      }
+
+      const to = promptEmail("");
+      if (!to) return;
+
+      const filename = `sinners_note_${note.noteId || noteId}.json`;
+      const exported = {
+        exportType: "SINNERS_NOTE",
+        exportedAt: nowISO(),
+        payload: note
+      };
+
+      downloadJSON(filename, exported);
+
+      const subject = `SINNERS NOTE: ${safeText(note.title || note.noteId || noteId, 120)}`;
+      const body =
+`SINNERS Forward — NOTE
+
+From: ${safeText(note.createdBy || "Unknown", 120)}
+Created: ${safeText(note.createdAt || "", 60)}
+Updated: ${safeText(note.updatedAt || "", 60)}
+Category: ${safeText(note.category || "Other", 40)}
+Linked Case: ${safeText(note.caseNumber || note.caseId || "None", 80)}
+
+ATTACHMENT:
+- ${filename}
+
+INSTRUCTIONS:
+1) Attach the downloaded JSON file to this email.
+2) Receiver imports it into SINNERS (Settings → Import Bundle, or your future Notes Import).
+3) It will preserve author + timestamps.
+
+(Browsers can’t auto-attach files to Outlook for security.)`;
+
+      openOutlookCompose({ to, subject, body });
+      toast("Forward", "Downloaded export + opened Outlook compose. Attach the JSON and send.");
+    } catch (e) {
+      toast("Forward Error", String(e?.message || e));
+    }
+  });
+})();
+
+
+/* =========================================================
+   NOTES: OPEN EXISTING (FIXED) — updates notes:index so list shows
+   Paste ABOVE the final "})();"
+   ========================================================= */
+(() => {
+  const btn = document.getElementById("btnOpenNote");
+  if (!btn) return;
+
+  // Replace listeners by cloning (nukes old handlers)
+  const clone = btn.cloneNode(true);
+  btn.parentNode.replaceChild(clone, btn);
+
+  // Make label obvious
+  clone.textContent = "Open Existing";
+
+  // Hidden file input
+  let inp = document.getElementById("noteImportFile");
+  if (!inp) {
+    inp = document.createElement("input");
+    inp.type = "file";
+    inp.id = "noteImportFile";
+    inp.accept = "application/json";
+    inp.hidden = true;
+    document.body.appendChild(inp);
+  }
+
+  function toast(title, message) {
+    try { Toasts.push({ title, message }); }
+    catch { alert(`${title}\n\n${message}`); }
+  }
+
+  async function readJSON(file) {
+    return JSON.parse(await file.text());
+  }
+
+  function slimFromNote(n) {
+    return {
+      noteId: n.noteId,
+      title: n.title || "Untitled",
+      category: n.category || "Other",
+      tags: Array.isArray(n.tags) ? n.tags : [],
+      caseId: n.caseId || "",
+      caseNumber: n.caseNumber || "",
+      createdAt: n.createdAt || "",
+      updatedAt: n.updatedAt || "",
+      createdBy: n.createdBy || ""
+    };
+  }
+
+  async function updateNotesIndexWith(noteObj) {
+    // Workspace mode: update notes/_index.json
+    if (typeof Store !== "undefined" && Store?.state?.mode === "workspace") {
+      const notesDir = await Workspace.dir(Store.state.rootHandle, "notes");
+
+      let idx = [];
+      try { idx = await Workspace.readJSON(notesDir, "_index.json"); } catch {}
+      if (!Array.isArray(idx)) idx = [];
+
+      const slim = slimFromNote(noteObj);
+      const i = idx.findIndex(x => x.noteId === slim.noteId);
+      if (i >= 0) idx[i] = slim;
+      else idx.unshift(slim);
+
+      idx.sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")));
+      await Workspace.writeJSON(notesDir, "_index.json", idx.slice(0, 4000));
+      return;
+    }
+
+    // Fallback mode: update cases/"notes:index"
+    let idx = await DB.get("cases", "notes:index");
+    if (!Array.isArray(idx)) idx = [];
+
+    const slim = slimFromNote(noteObj);
+    const i = idx.findIndex(x => x.noteId === slim.noteId);
+    if (i >= 0) idx[i] = slim;
+    else idx.unshift(slim);
+
+    idx.sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")));
+    await DB.set("cases", "notes:index", idx.slice(0, 4000));
+  }
+
+  async function saveImportedNote(noteObj) {
+    // Workspace: write notes/<id>.json
+    if (typeof Store !== "undefined" && Store?.state?.mode === "workspace") {
+      const notesDir = await Workspace.dir(Store.state.rootHandle, "notes");
+      await Workspace.writeJSON(notesDir, `${noteObj.noteId}.json`, noteObj);
+      await updateNotesIndexWith(noteObj);
+      return;
+    }
+
+    // Fallback: store in cases as note:<id>
+    await DB.set("cases", `note:${noteObj.noteId}`, noteObj);
+    await updateNotesIndexWith(noteObj);
+  }
+
+  clone.addEventListener("click", () => inp.click());
+
+  inp.addEventListener("change", async () => {
+    try {
+      const f = inp.files?.[0];
+      inp.value = "";
+      if (!f) return;
+
+      const raw = await readJSON(f);
+      const payload = raw?.payload ? raw.payload : raw; // supports wrapped exports OR raw note JSON
+
+      if (!payload || typeof payload !== "object") throw new Error("Invalid note JSON.");
+
+      // normalize required fields
+      payload.noteId = payload.noteId || `note_${Date.now()}`;
+      payload.createdAt = payload.createdAt || new Date().toISOString();
+      payload.updatedAt = payload.updatedAt || new Date().toISOString();
+      payload.createdBy = payload.createdBy || (sessionStorage.getItem("sinners_user") || "Admin");
+      payload.title = payload.title || "Untitled";
+      payload.category = payload.category || "Other";
+      payload.tags = Array.isArray(payload.tags) ? payload.tags : [];
+
+      await saveImportedNote(payload);
+
+      toast("Notes", "Imported. Opening Notes page…");
+
+      // This triggers your nav override (from Notes add-on) to re-render the list.
+      if (typeof nav === "function") {
+        nav("dashboard");
+        setTimeout(() => nav("notes"), 0);
+      }
+    } catch (e) {
+      toast("Import Error", String(e?.message || e));
+    }
+  });
+})();
+
+
+/* =========================================================
+   CALENDAR MODULE (local-first)
+   - Route: "calendar"
+   - Storage: workspace logs/calendar_<user>.json OR IndexedDB agenda/calendar:<user>
+   ========================================================= */
+(() => {
+  const page = document.getElementById("page-calendar");
+  if (!page) return;
+
+  // Register page for router
+  try { Pages.calendar = page; } catch {}
+
+  const elNow = document.getElementById("calNowPill");
+  const elMonth = document.getElementById("calMonthLabel");
+  const elGrid = document.getElementById("calGrid");
+  const elSelected = document.getElementById("calSelectedPill");
+  const elList = document.getElementById("calList");
+  const elUpcoming = document.getElementById("calUpcoming");
+
+  const btnPrev = document.getElementById("btnCalPrev");
+  const btnNext = document.getElementById("btnCalNext");
+  const btnToday = document.getElementById("btnCalToday");
+  const btnNew = document.getElementById("btnCalNew");
+  const btnNewForDay = document.getElementById("btnCalNewForDay");
+  const btnClearDay = document.getElementById("btnCalClearDay");
+
+  // ---------- Helpers ----------
+  const pad2 = (n) => String(n).padStart(2, "0");
+  const ymd = (d) => `${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())}`;
+
+  function toast(title, message) {
+    try { Toasts.push({ title, message }); }
+    catch { alert(`${title}\n\n${message}`); }
+  }
+
+  function userKey() {
+    try {
+      const u = sessionStorage.getItem("sinners_user") || "Admin";
+      return String(u).trim() || "Admin";
+    } catch { return "Admin"; }
+  }
+
+  // ---------- Storage ----------
+  async function loadCalendar() {
+    const u = userKey();
+    if (Store?.state?.mode === "workspace") {
+      const logs = await Workspace.dir(Store.state.rootHandle, "logs");
+      try {
+        const data = await Workspace.readJSON(logs, `calendar_${u}.json`);
+        return Array.isArray(data) ? data : [];
+      } catch { return []; }
+    }
+    return (await DB.get("agenda", `calendar:${u}`)) || [];
+  }
+
+  async function saveCalendar(items) {
+    const u = userKey();
+    const clean = Array.isArray(items) ? items.slice(0, 5000) : [];
+    if (Store?.state?.mode === "workspace") {
+      const logs = await Workspace.dir(Store.state.rootHandle, "logs");
+      await Workspace.writeJSON(logs, `calendar_${u}.json`, clean);
+      return;
+    }
+    await DB.set("agenda", `calendar:${u}`, clean);
+  }
+
+  // ---------- State ----------
+  let view = new Date(); // month being shown
+  view.setDate(1);
+  let selectedDay = null; // YYYY-MM-DD
+  let items = []; // [{id, date, time, title, notes, createdBy, createdAt, updatedAt}]
+
+  // ---------- UI ----------
+  function renderNowPill() {
+    const d = new Date();
+    elNow.textContent = `Local: ${d.toLocaleString()}`;
+  }
+
+  function monthLabel(d) {
+    const m = d.toLocaleString(undefined, { month: "long", year: "numeric" });
+    return m;
+  }
+
+  function sameDay(a, b) {
+    return a.getFullYear() === b.getFullYear() &&
+      a.getMonth() === b.getMonth() &&
+      a.getDate() === b.getDate();
+  }
+
+  function dayHasItems(dayStr) {
+    return items.some(x => x.date === dayStr);
+  }
+
+  function countDayItems(dayStr) {
+    return items.filter(x => x.date === dayStr).length;
+  }
+
+  function renderGrid() {
+    elMonth.textContent = monthLabel(view);
+
+    const first = new Date(view);
+    const startDow = first.getDay(); // 0 sun
+    const start = new Date(first);
+    start.setDate(first.getDate() - startDow);
+
+    const today = new Date();
+    const selected = selectedDay;
+
+    elGrid.innerHTML = "";
+
+    for (let i = 0; i < 42; i++) {
+      const d = new Date(start);
+      d.setDate(start.getDate() + i);
+
+      const dayStr = ymd(d);
+      const cell = document.createElement("div");
+      cell.className = "cal-day";
+
+      if (d.getMonth() !== view.getMonth()) cell.classList.add("muted");
+      if (sameDay(d, today)) cell.classList.add("today");
+      if (selected && selected === dayStr) cell.classList.add("selected");
+
+      const n = document.createElement("div");
+      n.className = "n";
+      n.textContent = String(d.getDate());
+      cell.appendChild(n);
+
+      if (dayHasItems(dayStr)) {
+        const dot = document.createElement("div");
+        dot.className = "dot";
+        const c = Math.min(4, countDayItems(dayStr));
+        for (let k = 0; k < c; k++) dot.appendChild(document.createElement("span"));
+        cell.appendChild(dot);
+      }
+
+      cell.addEventListener("click", () => {
+        selectedDay = dayStr;
+        elSelected.textContent = `Selected: ${dayStr}`;
+        btnNewForDay.disabled = false;
+        btnClearDay.disabled = !dayHasItems(dayStr);
+        renderGrid();
+        renderDayList();
+        renderUpcoming();
+      });
+
+      elGrid.appendChild(cell);
+    }
+  }
+
+  function renderDayList() {
+    elList.innerHTML = "";
+    if (!selectedDay) {
+      const m = document.createElement("div");
+      m.className = "muted";
+      m.textContent = "Click a day on the calendar to view reminders.";
+      elList.appendChild(m);
+      return;
+    }
+
+    const dayItems = items
+      .filter(x => x.date === selectedDay)
+      .sort((a,b) => String(a.time||"").localeCompare(String(b.time||"")));
+
+    if (!dayItems.length) {
+      const m = document.createElement("div");
+      m.className = "muted";
+      m.textContent = "No reminders on this day.";
+      elList.appendChild(m);
+      return;
+    }
+
+    for (const it of dayItems) {
+      const card = document.createElement("div");
+      card.className = "cal-item";
+
+      const top = document.createElement("div");
+      top.className = "top";
+
+      const title = document.createElement("div");
+      title.className = "title";
+      title.textContent = `${it.time ? it.time + " — " : ""}${it.title || "Untitled"}`;
+
+      const del = document.createElement("button");
+      del.className = "btn ghost";
+      del.textContent = "Delete";
+      del.addEventListener("click", async () => {
+        items = items.filter(x => x.id !== it.id);
+        await saveCalendar(items);
+        toast("Calendar", "Deleted.");
+        btnClearDay.disabled = !dayHasItems(selectedDay);
+        renderGrid();
+        renderDayList();
+        renderUpcoming();
+      });
+
+      top.appendChild(title);
+      top.appendChild(del);
+
+      const meta = document.createElement("div");
+      meta.className = "meta";
+      meta.textContent = `By ${it.createdBy || "Admin"} • Updated ${new Date(it.updatedAt || it.createdAt || Date.now()).toLocaleString()}`;
+
+      const notes = document.createElement("div");
+      notes.className = "muted";
+      notes.style.marginTop = "8px";
+      notes.textContent = it.notes || "";
+
+      card.appendChild(top);
+      card.appendChild(meta);
+      if (it.notes) card.appendChild(notes);
+
+      elList.appendChild(card);
+    }
+  }
+
+  function renderUpcoming() {
+    elUpcoming.innerHTML = "";
+
+    const now = new Date();
+    const start = new Date(now);
+    start.setHours(0,0,0,0);
+
+    const end = new Date(start);
+    end.setDate(start.getDate() + 14);
+
+    const upcoming = items
+      .filter(x => {
+        const d = new Date(x.date + "T00:00:00");
+        return d >= start && d <= end;
+      })
+      .sort((a,b) => {
+        const ad = a.date + " " + (a.time || "99:99");
+        const bd = b.date + " " + (b.time || "99:99");
+        return ad.localeCompare(bd);
+      })
+      .slice(0, 20);
+
+    if (!upcoming.length) {
+      const m = document.createElement("div");
+      m.className = "muted";
+      m.textContent = "No upcoming reminders in the next 14 days.";
+      elUpcoming.appendChild(m);
+      return;
+    }
+
+    for (const it of upcoming) {
+      const row = document.createElement("div");
+      row.className = "item";
+
+      const t = document.createElement("div");
+      t.textContent = `${it.date}${it.time ? " " + it.time : ""} — ${it.title || "Untitled"}`;
+
+      const m = document.createElement("div");
+      m.className = "meta";
+      m.textContent = `By ${it.createdBy || "Admin"}`;
+
+      row.appendChild(t);
+      row.appendChild(m);
+
+      row.addEventListener("click", () => {
+        selectedDay = it.date;
+        elSelected.textContent = `Selected: ${it.date}`;
+        btnNewForDay.disabled = false;
+        btnClearDay.disabled = !dayHasItems(it.date);
+        view = new Date(it.date + "T00:00:00");
+        view.setDate(1);
+        renderGrid();
+        renderDayList();
+        renderUpcoming();
+      });
+
+      elUpcoming.appendChild(row);
+    }
+  }
+
+  function openNewModal(datePref = null) {
+    const wrap = document.createElement("div");
+
+    const date = document.createElement("input");
+    date.placeholder = "YYYY-MM-DD";
+    date.value = datePref || ymd(new Date());
+
+    const time = document.createElement("input");
+    time.placeholder = "HH:MM (optional)";
+    time.value = "";
+
+    const title = document.createElement("input");
+    title.placeholder = "Reminder title (e.g., Follow up with witness, pull footage)";
+
+    const notes = document.createElement("textarea");
+    notes.rows = 4;
+    notes.placeholder = "Notes (optional)";
+
+    [date, time, title, notes].forEach(el => {
+      el.style.marginTop = "10px";
+      el.style.width = "100%";
+    });
+
+    wrap.appendChild(date);
+    wrap.appendChild(time);
+    wrap.appendChild(title);
+    wrap.appendChild(notes);
+
+    Modal.open({
+      title: "New Reminder",
+      body: wrap,
+      actions: [
+        { label: "Cancel" },
+        {
+          label: "Save",
+          primary: true,
+          onClick: async () => {
+            const d = String(date.value || "").trim();
+            if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) {
+              toast("Calendar", "Invalid date. Use YYYY-MM-DD.");
+              return;
+            }
+
+            const item = {
+              id: uid("cal"),
+              date: d,
+              time: String(time.value || "").trim().slice(0, 5),
+              title: String(title.value || "").trim().slice(0, 140) || "Untitled",
+              notes: String(notes.value || "").trim().slice(0, 4000),
+              createdBy: (sessionStorage.getItem("sinners_user") || "Admin"),
+              createdAt: nowISO(),
+              updatedAt: nowISO()
+            };
+
+            items.unshift(item);
+            await saveCalendar(items);
+
+            toast("Calendar", "Saved.");
+            selectedDay = d;
+            elSelected.textContent = `Selected: ${d}`;
+            btnNewForDay.disabled = false;
+            btnClearDay.disabled = !dayHasItems(d);
+
+            view = new Date(d + "T00:00:00");
+            view.setDate(1);
+
+            renderGrid();
+            renderDayList();
+            renderUpcoming();
+          }
+        }
+      ]
+    });
+  }
+
+  async function clearSelectedDay() {
+    if (!selectedDay) return;
+    const d = selectedDay;
+    const before = items.length;
+    items = items.filter(x => x.date !== d);
+    if (items.length === before) return;
+    await saveCalendar(items);
+    toast("Calendar", "Cleared day.");
+    btnClearDay.disabled = true;
+    renderGrid();
+    renderDayList();
+    renderUpcoming();
+  }
+
+  // ---------- Wire buttons ----------
+  btnPrev?.addEventListener("click", () => {
+    view.setMonth(view.getMonth() - 1);
+    renderGrid();
+  });
+  btnNext?.addEventListener("click", () => {
+    view.setMonth(view.getMonth() + 1);
+    renderGrid();
+  });
+  btnToday?.addEventListener("click", () => {
+    const t = new Date();
+    view = new Date(t); view.setDate(1);
+    selectedDay = ymd(t);
+    elSelected.textContent = `Selected: ${selectedDay}`;
+    btnNewForDay.disabled = false;
+    btnClearDay.disabled = !dayHasItems(selectedDay);
+    renderGrid();
+    renderDayList();
+    renderUpcoming();
+  });
+  btnNew?.addEventListener("click", () => openNewModal(selectedDay || null));
+  btnNewForDay?.addEventListener("click", () => selectedDay && openNewModal(selectedDay));
+  btnClearDay?.addEventListener("click", clearSelectedDay);
+
+  // ---------- Router hook ----------
+  // Your script already has nav(route). We wrap it safely.
+  const _nav = (typeof nav === "function") ? nav : null;
+  if (_nav) {
+    nav = (route) => {
+      _nav(route);
+      if (route === "calendar") {
+        // render on entry
+        setTimeout(async () => {
+          try {
+            renderNowPill();
+            items = await loadCalendar();
+
+            // default to today on first open
+            if (!selectedDay) selectedDay = ymd(new Date());
+            elSelected.textContent = `Selected: ${selectedDay}`;
+            btnNewForDay.disabled = false;
+            btnClearDay.disabled = !dayHasItems(selectedDay);
+
+            view = new Date(selectedDay + "T00:00:00");
+            view.setDate(1);
+
+            renderGrid();
+            renderDayList();
+            renderUpcoming();
+          } catch (e) {
+            toast("Calendar", `Error: ${String(e?.message || e)}`);
+          }
+        }, 0);
+      }
+    };
+  }
+
+  // Keep local time fresh
+  renderNowPill();
+  setInterval(renderNowPill, 1000);
+})();
 
 })();

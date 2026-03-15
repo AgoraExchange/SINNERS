@@ -67,6 +67,8 @@
             <li><code>templates/</code> — report templates</li>
             <li><code>exports/</code> — exports (JSON/PDF)</li>
             <li><code>logs/</code> — agenda + audit log</li>
+            <li><code>notes/</code> — investigator notes</li>
+            <li><code>evidence/</code> — evidence bags + manifests</li>
           </ul>
         </div>
       </div>
@@ -146,6 +148,13 @@
         <button class="nav-item active" data-route="dashboard">🏠 <span>Dashboard</span></button>
         <button class="nav-item" data-route="cases">🗂️ <span>Cases</span></button>
         <button class="nav-item" data-route="reports">📝 <span>Reports</span></button>
+
+        <button class="nav-item" data-route="notes">🗒️ <span>Notes</span></button>
+        <button class="nav-item" data-route="evidence">🧾 <span>Evidence</span></button>
+
+        <!-- NEW -->
+        <button class="nav-item" data-route="calendar">📅 <span>Calendar</span></button>
+
         <button class="nav-item" data-route="osint">🕵️ <span>OSINT Launcher</span></button>
         <button class="nav-item" data-route="utils">🧰 <span>Utilities</span></button>
         <button class="nav-item" data-route="settings">⚙️ <span>Settings</span></button>
@@ -392,6 +401,221 @@
           </div>
         </div>
 
+        <!-- Notes -->
+        <div id="page-notes" class="page" hidden>
+          <div class="page-head">
+            <h2>Notes</h2>
+            <div class="row gap">
+              <button class="btn primary" id="btnNewNote">+ New Note</button>
+              <button class="btn ghost" id="btnOpenNote">Open</button>
+              <button class="btn ghost" id="btnSaveNote" disabled>Save</button>
+              <button class="btn ghost" id="btnDeleteNote" disabled>Delete</button>
+            </div>
+          </div>
+
+          <div class="grid-2">
+            <div class="card">
+              <div class="row gap">
+                <input id="noteFilter" placeholder="Filter notes by title, category, tag, case…" />
+                <select id="noteCategoryFilter">
+                  <option value="">All</option>
+                  <option>Reminder</option>
+                  <option>Case</option>
+                  <option>Lead</option>
+                  <option>Evidence</option>
+                  <option>Idea</option>
+                  <option>Other</option>
+                </select>
+              </div>
+              <div class="divider"></div>
+              <div id="noteList" class="listbox"></div>
+            </div>
+
+            <div class="card">
+              <div class="card-head">
+                <h3>Editor</h3>
+                <span class="tiny muted" id="noteMetaPill">No note loaded</span>
+              </div>
+
+              <div id="noteEditorEmpty" class="muted">Create or open a note to start typing.</div>
+
+              <div id="noteEditor" hidden>
+                <div class="grid-2">
+                  <label class="label">
+                    <span>Title</span>
+                    <input id="noteTitle" />
+                  </label>
+
+                  <label class="label">
+                    <span>Category</span>
+                    <select id="noteCategory">
+                      <option>Reminder</option>
+                      <option>Case</option>
+                      <option>Lead</option>
+                      <option>Evidence</option>
+                      <option>Idea</option>
+                      <option selected>Other</option>
+                    </select>
+                  </label>
+                </div>
+
+                <div class="grid-2">
+                  <label class="label">
+                    <span>Linked Case (optional)</span>
+                    <select id="noteCaseLink">
+                      <option value="">None</option>
+                    </select>
+                  </label>
+                  <label class="label">
+                    <span>Tags (comma-separated)</span>
+                    <input id="noteTags" placeholder="osint, timeline, call, follow-up…" />
+                  </label>
+                </div>
+
+                <label class="label">
+                  <span>Note</span>
+                  <textarea id="noteBody" rows="12" placeholder="Type anything. This is local-first."></textarea>
+                </label>
+
+                <div class="divider"></div>
+                <div class="row gap">
+                  <div class="pill" id="noteIdPill">Note: none</div>
+                  <div class="pill" id="noteStoragePill">Storage: …</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Evidence -->
+        <div id="page-evidence" class="page" hidden>
+          <div class="page-head">
+            <h2>Evidence</h2>
+            <div class="row gap">
+              <button class="btn primary" id="btnNewBag">+ New Evidence Bag</button>
+              <button class="btn ghost" id="btnUploadEvidence" disabled>Upload Files</button>
+              <button class="btn ghost" id="btnSaveBag" disabled>Save Bag</button>
+              <button class="btn ghost" id="btnDeleteBag" disabled>Delete Bag</button>
+              <input type="file" id="evidenceFileInput" accept="image/*,application/pdf,text/plain" multiple hidden />
+            </div>
+          </div>
+
+          <div class="grid-2">
+            <div class="card">
+              <div class="row gap">
+                <input id="bagFilter" placeholder="Filter bags by label, date, case…" />
+                <select id="bagCaseFilter">
+                  <option value="">All cases</option>
+                </select>
+              </div>
+              <div class="divider"></div>
+              <div id="bagList" class="listbox"></div>
+            </div>
+
+            <div class="card">
+              <div class="card-head">
+                <h3>Bag Detail</h3>
+                <span class="tiny muted" id="bagMetaPill">No bag loaded</span>
+              </div>
+
+              <div id="bagDetailEmpty" class="muted">Create or open an evidence bag to organize files.</div>
+
+              <div id="bagDetail" hidden>
+                <div class="grid-2">
+                  <label class="label">
+                    <span>Bag Label</span>
+                    <input id="bagLabel" placeholder="e.g., ScooterGuy1.10.26" />
+                  </label>
+
+                  <label class="label">
+                    <span>Date</span>
+                    <input id="bagDate" placeholder="YYYY-MM-DD" />
+                  </label>
+                </div>
+
+                <div class="grid-2">
+                  <label class="label">
+                    <span>Linked Case (optional)</span>
+                    <select id="bagCaseLink">
+                      <option value="">None</option>
+                    </select>
+                  </label>
+
+                  <label class="label">
+                    <span>Collected By</span>
+                    <input id="bagBy" />
+                  </label>
+                </div>
+
+                <label class="label">
+                  <span>Bag Notes</span>
+                  <textarea id="bagNotes" rows="4" placeholder="What is this bag about? Where did it come from?"></textarea>
+                </label>
+
+                <div class="divider"></div>
+
+                <div class="row gap" style="justify-content:space-between;">
+                  <h4 class="muted" style="margin:0;">Bag Items</h4>
+                  <span class="tiny muted">Tip: upload images/PDFs, then add notes per item.</span>
+                </div>
+
+                <div id="bagItems" class="stack"></div>
+
+                <div class="divider"></div>
+                <div class="row gap">
+                  <div class="pill" id="bagIdPill">Bag: none</div>
+                  <div class="pill" id="bagStoragePill">Storage: …</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- NEW: Calendar -->
+        <div id="page-calendar" class="page" hidden>
+          <div class="page-head">
+            <h2>Calendar</h2>
+            <div class="row gap">
+              <div class="pill" id="calNowPill">Local: …</div>
+              <button class="btn ghost" id="btnCalToday">Today</button>
+              <button class="btn ghost" id="btnCalPrev">◀</button>
+              <div class="pill" id="calMonthLabel">Month</div>
+              <button class="btn ghost" id="btnCalNext">▶</button>
+              <button class="btn primary" id="btnCalNew">+ New Reminder</button>
+            </div>
+          </div>
+
+          <div class="grid-2">
+            <div class="card">
+              <div class="cal-week cal-head">
+                <div>Sun</div><div>Mon</div><div>Tue</div><div>Wed</div><div>Thu</div><div>Fri</div><div>Sat</div>
+              </div>
+              <div id="calGrid" class="cal-grid"></div>
+              <p class="tiny muted" style="margin-top:10px;">
+                Click a day to view reminders. Items are saved locally per-investigator login.
+              </p>
+            </div>
+
+            <div class="card">
+              <div class="card-head">
+                <h3>Day Detail</h3>
+                <span class="tiny muted" id="calSelectedPill">Select a day</span>
+              </div>
+
+              <div id="calDayActions" class="row gap" style="margin-bottom:10px;">
+                <button class="btn ghost" id="btnCalNewForDay" disabled>+ Add to Selected Day</button>
+                <button class="btn ghost" id="btnCalClearDay" disabled>Clear Day</button>
+              </div>
+
+              <div id="calList" class="stack"></div>
+
+              <div class="divider"></div>
+              <h4 class="muted">Upcoming (next 14 days)</h4>
+              <div id="calUpcoming" class="stack"></div>
+            </div>
+          </div>
+        </div>
+
         <!-- OSINT -->
         <div id="page-osint" class="page" hidden>
           <div class="page-head">
@@ -455,7 +679,7 @@
               <h3>Timestamp Converter</h3>
               <label class="label">
                 <span>Input (ISO / epoch seconds / epoch ms)</span>
-                <input id="tsInput" placeholder="e.g., 1700000000 or 1700000000000 or 2026-02-26T12:00:00Z" />
+                <input id="tsInput" placeholder="e.g. 1700000000 or 1700000000000 or 2026-02-26T12:00:00Z" />
               </label>
               <div class="row gap">
                 <button class="btn primary" id="btnTsConvert">Convert</button>

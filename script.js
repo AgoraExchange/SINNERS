@@ -4690,4 +4690,47 @@ INSTRUCTIONS:
   setInterval(renderNowPill, 1000);
 })();
 
+// =========================
+// PATCH: Reports "Save" should auto-create a draft if none is loaded
+// Paste this RIGHT ABOVE the final "})();"
+// =========================
+(() => {
+  // Guard: only run if these exist in your current build
+  if (typeof btnSaveReport === "undefined" || !btnSaveReport) return;
+  if (typeof saveReport !== "function" || typeof createNewReport !== "function") return;
+
+  // Override the save button behavior (this replaces whatever was wired earlier)
+  btnSaveReport.onclick = async () => {
+    try {
+      const hasLoadedReport =
+        AppState &&
+        AppState.report &&
+        AppState.report.reportId &&
+        AppState.report.caseId;
+
+      // If no report loaded, auto-create a new one (requires an active case)
+      if (!hasLoadedReport) {
+        const cid = AppState?.activeCaseId || AppState?.report?.caseId;
+
+        if (!cid) {
+          Toasts?.push?.({ title: "Report", message: "Set an active case first (Cases → Set Active), then Save again." });
+          if (typeof showPage === "function") showPage("cases");
+          return;
+        }
+
+        // Create a new report draft tied to active case
+        await createNewReport(cid);
+      }
+
+      // Now save the report normally
+      await saveReport();
+      Toasts?.push?.({ title: "Report", message: "Saved." });
+
+    } catch (e) {
+      Toasts?.push?.({ title: "Report Save Error", message: String(e?.message || e) });
+      console.error("Report Save Error:", e);
+    }
+  };
+})();
+
 })();
